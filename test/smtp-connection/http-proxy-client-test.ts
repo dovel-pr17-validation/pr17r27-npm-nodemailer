@@ -1,0 +1,444 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import net from 'node:net';
+import proxy from 'proxy';
+import httpProxyClient from '../../src/smtp-connection/http-proxy-client.js';
+import SMTPConnection from '../../src/smtp-connection/index.js';
+import { SMTPServer } from 'smtp-server';
+import { createHttpsProxy } from './https-connect-proxy.js';
+
+const PROXY_PORT = 3128;
+const TARGET_PORT = 3129;
+
+// Self-signed cert reused from test/fetch/nmfetch-test.js, keeps this test
+// self-contained per the repo's per-file-copy convention.
+const httpsOptions = {
+    key:
+        '-----BEGIN RSA PRIVATE KEY-----\n' +
+        'MIIEpAIBAAKCAQEA6Z5Qqhw+oWfhtEiMHE32Ht94mwTBpAfjt3vPpX8M7DMCTwHs\n' +
+        '1xcXvQ4lQ3rwreDTOWdoJeEEy7gMxXqH0jw0WfBx+8IIJU69xstOyT7FRFDvA1yT\n' +
+        'RXY2yt9K5s6SKken/ebMfmZR+03ND4UFsDzkz0FfgcjrkXmrMF5Eh5UXX/+9YHeU\n' +
+        'xlp0gMAt+/SumSmgCaysxZLjLpd4uXz+X+JVxsk1ACg1NoEO7lWJC/3WBP7MIcu2\n' +
+        'wVsMd2XegLT0gWYfT1/jsIH64U/mS/SVXC9QhxMl9Yfko2kx1OiYhDxhHs75RJZh\n' +
+        'rNRxgfiwgSb50Gw4NAQaDIxr/DJPdLhgnpY6UQIDAQABAoIBAE+tfzWFjJbgJ0ql\n' +
+        's6Ozs020Sh4U8TZQuonJ4HhBbNbiTtdDgNObPK1uNadeNtgW5fOeIRdKN6iDjVeN\n' +
+        'AuXhQrmqGDYVZ1HSGUfD74sTrZQvRlWPLWtzdhybK6Css41YAyPFo9k4bJ2ZW2b/\n' +
+        'p4EEQ8WsNja9oBpttMU6YYUchGxo1gujN8hmfDdXUQx3k5Xwx4KA68dveJ8GasIt\n' +
+        'd+0Jd/FVwCyyx8HTiF1FF8QZYQeAXxbXJgLBuCsMQJghlcpBEzWkscBR3Ap1U0Zi\n' +
+        '4oat8wrPZGCblaA6rNkRUVbc/+Vw0stnuJ/BLHbPxyBs6w495yBSjBqUWZMvljNz\n' +
+        'm9/aK0ECgYEA9oVIVAd0enjSVIyAZNbw11ElidzdtBkeIJdsxqhmXzeIFZbB39Gd\n' +
+        'bjtAVclVbq5mLsI1j22ER2rHA4Ygkn6vlLghK3ZMPxZa57oJtmL3oP0RvOjE4zRV\n' +
+        'dzKexNGo9gU/x9SQbuyOmuauvAYhXZxeLpv+lEfsZTqqrvPUGeBiEQcCgYEA8poG\n' +
+        'WVnykWuTmCe0bMmvYDsWpAEiZnFLDaKcSbz3O7RMGbPy1cypmqSinIYUpURBT/WY\n' +
+        'wVPAGtjkuTXtd1Cy58m7PqziB7NNWMcsMGj+lWrTPZ6hCHIBcAImKEPpd+Y9vGJX\n' +
+        'oatFJguqAGOz7rigBq6iPfeQOCWpmprNAuah++cCgYB1gcybOT59TnA7mwlsh8Qf\n' +
+        'bm+tSllnin2A3Y0dGJJLmsXEPKtHS7x2Gcot2h1d98V/TlWHe5WNEUmx1VJbYgXB\n' +
+        'pw8wj2ACxl4ojNYqWPxegaLd4DpRbtW6Tqe9e47FTnU7hIggR6QmFAWAXI+09l8y\n' +
+        'amssNShqjE9lu5YDi6BTKwKBgQCuIlKGViLfsKjrYSyHnajNWPxiUhIgGBf4PI0T\n' +
+        '/Jg1ea/aDykxv0rKHnw9/5vYGIsM2st/kR7l5mMecg/2Qa145HsLfMptHo1ZOPWF\n' +
+        '9gcuttPTegY6aqKPhGthIYX2MwSDMM+X0ri6m0q2JtqjclAjG7yG4CjbtGTt/UlE\n' +
+        'WMlSZwKBgQDslGeLUnkW0bsV5EG3AKRUyPKz/6DVNuxaIRRhOeWVKV101claqXAT\n' +
+        'wXOpdKrvkjZbT4AzcNrlGtRl3l7dEVXTu+dN7/ZieJRu7zaStlAQZkIyP9O3DdQ3\n' +
+        'rIcetQpfrJ1cAqz6Ng0pD0mh77vQ13WG1BBmDFa2A9BuzLoBituf4g==\n' +
+        '-----END RSA PRIVATE KEY-----',
+    cert:
+        '-----BEGIN CERTIFICATE-----\n' +
+        'MIICpDCCAYwCCQCuVLVKVTXnAjANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDEwls\n' +
+        'b2NhbGhvc3QwHhcNMTUwMjEyMTEzMjU4WhcNMjUwMjA5MTEzMjU4WjAUMRIwEAYD\n' +
+        'VQQDEwlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDp\n' +
+        'nlCqHD6hZ+G0SIwcTfYe33ibBMGkB+O3e8+lfwzsMwJPAezXFxe9DiVDevCt4NM5\n' +
+        'Z2gl4QTLuAzFeofSPDRZ8HH7wgglTr3Gy07JPsVEUO8DXJNFdjbK30rmzpIqR6f9\n' +
+        '5sx+ZlH7Tc0PhQWwPOTPQV+ByOuReaswXkSHlRdf/71gd5TGWnSAwC379K6ZKaAJ\n' +
+        'rKzFkuMul3i5fP5f4lXGyTUAKDU2gQ7uVYkL/dYE/swhy7bBWwx3Zd6AtPSBZh9P\n' +
+        'X+OwgfrhT+ZL9JVcL1CHEyX1h+SjaTHU6JiEPGEezvlElmGs1HGB+LCBJvnQbDg0\n' +
+        'BBoMjGv8Mk90uGCeljpRAgMBAAEwDQYJKoZIhvcNAQELBQADggEBABXm8GPdY0sc\n' +
+        'mMUFlgDqFzcevjdGDce0QfboR+M7WDdm512Jz2SbRTgZD/4na42ThODOZz9z1AcM\n' +
+        'zLgx2ZNZzVhBz0odCU4JVhOCEks/OzSyKeGwjIb4JAY7dh+Kju1+6MNfQJ4r1Hza\n' +
+        'SVXH0+JlpJDaJ73NQ2JyfqELmJ1mTcptkA/N6rQWhlzycTBSlfogwf9xawgVPATP\n' +
+        '4AuwgjHl12JI2HVVs1gu65Y3slvaHRCr0B4+Kg1GYNLLcbFcK+NEHrHmPxy9TnTh\n' +
+        'Zwp1dsNQU+Xkylz8IUANWSLHYZOMtN2e5SKIdwTtl5C8YxveuY8YKb1gDExnMraT\n' +
+        'VGXQDqPleug=\n' +
+        '-----END CERTIFICATE-----'
+};
+
+describe('HTTP Proxy Client Tests', { timeout: 10 * 1000 }, () => {
+    it('should connect to a socket through proxy', (t, done) => {
+        const smtpServer = new SMTPServer({
+            logger: false
+        });
+
+        smtpServer.listen(TARGET_PORT, () => {
+            const proxyServer = proxy(http.createServer());
+            proxyServer.listen(PROXY_PORT, () => {
+                httpProxyClient('http://localhost:' + PROXY_PORT, TARGET_PORT, '127.0.0.1', (err, socket: any) => {
+                    assert.ok(!err);
+                    socket.once('data', (chunk: Buffer) => {
+                        assert.strictEqual(/^220[ -]/.test(chunk.toString()), true);
+                        socket.end();
+                        socket.on('close', () => {
+                            socket.destroy();
+                            smtpServer.close(() => setImmediate(done) && proxyServer.close());
+                        });
+                    });
+                });
+            });
+        });
+    });
+    it('should connect to a socket through proxy with auth', (t, done) => {
+        const smtpServer = new SMTPServer({
+            logger: false
+        });
+
+        smtpServer.listen(TARGET_PORT, () => {
+            const proxyServer = proxy(http.createServer());
+            proxyServer.authenticate = (req: any, cb: any) => {
+                cb(null, req.headers['proxy-authorization'] === 'Basic dGVzdDpwZXN0');
+            };
+            proxyServer.listen(PROXY_PORT, () => {
+                httpProxyClient('http://test:pest@localhost:' + PROXY_PORT, TARGET_PORT, '127.0.0.1', (err, socket: any) => {
+                    assert.ok(!err);
+                    socket.once('data', (chunk: Buffer) => {
+                        assert.strictEqual(/^220[ -]/.test(chunk.toString()), true);
+                        socket.end();
+                        socket.on('close', () => {
+                            socket.destroy();
+                            smtpServer.close(() => setImmediate(done) && proxyServer.close());
+                        });
+                    });
+                });
+            });
+        });
+    });
+
+    it('should should fail auth', (t, done) => {
+        const smtpServer = new SMTPServer({
+            logger: false
+        });
+
+        smtpServer.listen(TARGET_PORT, () => {
+            const proxyServer = proxy(http.createServer());
+            proxyServer.authenticate = (req: any, cb: any) => {
+                cb(null, req.headers['proxy-authorization'] === 'Basic dGVzdDpwZXN0');
+            };
+            proxyServer.listen(PROXY_PORT, () => {
+                httpProxyClient('http://test:kest@localhost:' + PROXY_PORT, TARGET_PORT, '127.0.0.1', (err, socket) => {
+                    assert.ok(err);
+                    assert.ok(!socket);
+
+                    smtpServer.close(() => setImmediate(done) && proxyServer.close());
+                });
+            });
+        });
+    });
+
+    it('should reject an HTTPS proxy with a self-signed cert by default', (t, done) => {
+        createHttpsProxy(httpsOptions, PROXY_PORT, proxyServer => {
+            // no tls options → the proxy's TLS certificate must be validated
+            httpProxyClient('https://localhost:' + PROXY_PORT, TARGET_PORT, '127.0.0.1', (err, socket) => {
+                assert.ok(err);
+                assert.ok(!socket);
+                proxyServer.close(done);
+            });
+        });
+    });
+
+    it('should connect through an HTTPS proxy when rejectUnauthorized is false', (t, done) => {
+        const smtpServer = new SMTPServer({
+            logger: false
+        });
+
+        smtpServer.listen(TARGET_PORT, () => {
+            createHttpsProxy(httpsOptions, PROXY_PORT, proxyServer => {
+                httpProxyClient('https://localhost:' + PROXY_PORT, TARGET_PORT, '127.0.0.1', { rejectUnauthorized: false }, (err, socket: any) => {
+                    assert.ok(!err);
+                    socket.once('data', (chunk: Buffer) => {
+                        assert.strictEqual(/^220[ -]/.test(chunk.toString()), true);
+                        socket.end();
+                        socket.on('close', () => {
+                            socket.destroy();
+                            smtpServer.close(() => proxyServer.close(done));
+                        });
+                    });
+                });
+            });
+        });
+    });
+
+    it('should fail with timeout', (t, done) => {
+        const proxyServer = proxy(http.createServer());
+        proxyServer.authenticate = (req: any, cb: any) => {
+            cb(null, req.headers['proxy-authorization'] === 'Basic dGVzdDpwZXN0');
+        };
+        proxyServer.listen(PROXY_PORT, () => {
+            httpProxyClient.timeout = 5 * 1000;
+            // using kreata.ee (178.33.49.65) as the destination. This port is not allowed by firewall so it times out
+            httpProxyClient('http://test:pest@localhost:' + PROXY_PORT, 12345, '178.33.49.65', (err, socket) => {
+                assert.ok(err);
+                assert.ok(!socket);
+                assert.strictEqual(err.code, 'ETIMEDOUT');
+
+                setImmediate(done) && proxyServer.close();
+            });
+        });
+    });
+
+    it('should reject a destination host containing CRLF (request smuggling)', (t, done) => {
+        httpProxyClient('http://127.0.0.1:9/', 25, 'target.example.com\r\nX-Injected: smuggled', {}, (err, socket) => {
+            assert.ok(err);
+            assert.strictEqual(err.code, 'EPROXY');
+            assert.ok(!socket);
+            done();
+        });
+    });
+
+    it('should reject a destination port containing CRLF', (t, done) => {
+        httpProxyClient('http://127.0.0.1:9/', '25\r\nX-Injected: 1', 'mail.example.com', {}, (err, socket) => {
+            assert.ok(err);
+            assert.strictEqual(err.code, 'EPROXY');
+            assert.ok(!socket);
+            done();
+        });
+    });
+
+    it('should reject a proxy response that never terminates its headers', (t, done) => {
+        const server = net.createServer(socket => {
+            socket.on('error', () => {});
+            socket.on('data', () => {}); // consume the CONNECT request
+            const blast = () => {
+                if (socket.destroyed) {
+                    return;
+                }
+                socket.write('X'.repeat(8192)); // never sends \r\n\r\n
+                setImmediate(blast);
+            };
+            blast();
+        });
+        server.listen(0, '127.0.0.1', () => {
+            const port = (server.address() as net.AddressInfo).port;
+            httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'mail.example.com', {}, (err, socket) => {
+                assert.ok(err);
+                assert.strictEqual(err.code, 'EPROXY');
+                assert.ok(!socket);
+                server.close();
+                done();
+            });
+        });
+    });
+});
+
+describe('HTTP Proxy Client CONNECT responses', { timeout: 10 * 1000 }, () => {
+    // Raw proxy with byte-exact control over the CONNECT response. Hands the
+    // request to onRequest once the request headers are complete.
+    function startRawProxy(onRequest: (socket: net.Socket, request: string) => void, callback: (server: net.Server, port: number) => void) {
+        const server = net.createServer(socket => {
+            socket.on('error', () => {});
+            let request = '';
+            const onData = (chunk: Buffer) => {
+                request += chunk.toString('binary');
+                if (request.includes('\r\n\r\n')) {
+                    socket.removeListener('data', onData);
+                    onRequest(socket, request);
+                }
+            };
+            socket.on('data', onData);
+        });
+        server.listen(0, '127.0.0.1', () => callback(server, (server.address() as net.AddressInfo).port));
+    }
+
+    it('hands over bytes that arrive together with the CONNECT response', (t, done) => {
+        let request = '';
+        startRawProxy(
+            (socket, req) => {
+                request = req;
+                // the SMTP greeting shares the packet with the response headers
+                socket.write('HTTP/1.1 200 Connection established\r\nProxy-Agent: test\r\n\r\n220 smtp.example.com ESMTP\r\n');
+            },
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', (err, socket) => {
+                    assert.ok(!err, err?.message);
+                    assert.ok(socket);
+                    socket.once('data', chunk => {
+                        socket.destroy();
+                        server.close(() => {
+                            assert.strictEqual(chunk.toString(), '220 smtp.example.com ESMTP\r\n');
+                            assert.ok(/^CONNECT smtp\.example\.com:25 HTTP\/1\.1\r\n/.test(request), request);
+                            assert.ok(/\r\nHost: smtp\.example\.com:25\r\n/.test(request), request);
+                            assert.ok(!/Proxy-Authorization/.test(request), 'no credentials were given');
+                            done();
+                        });
+                    });
+                });
+            }
+        );
+    });
+
+    // Only the new bytes and the three before them are searched for the end of the headers,
+    // so a terminator split across chunks has to be found all the same
+    it('finds the end of the headers when it is split across chunks', (t, done) => {
+        const pieces = ['HTTP/1.1 200 Connection established\r\nProxy-Agent: test\r', '\n', '\r', '\n220 smtp', '.example.com ESMTP\r\n'];
+        startRawProxy(
+            socket => {
+                socket.setNoDelay(true);
+                const next = () => {
+                    const piece = pieces.shift();
+                    if (piece !== undefined && !socket.destroyed) {
+                        socket.write(piece);
+                        setTimeout(next, 20);
+                    }
+                };
+                next();
+            },
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', (err, socket) => {
+                    assert.ok(!err, err?.message);
+                    assert.ok(socket);
+                    let greeting = '';
+                    socket.on('data', chunk => {
+                        greeting += chunk.toString();
+                        if (greeting.endsWith('\r\n')) {
+                            socket.destroy();
+                            server.close(() => {
+                                assert.strictEqual(greeting, '220 smtp.example.com ESMTP\r\n');
+                                done();
+                            });
+                        }
+                    });
+                });
+            }
+        );
+    });
+
+    it('rejects a CONNECT response without an HTTP status line', (t, done) => {
+        startRawProxy(
+            socket => socket.write('garbage\r\n\r\n'),
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', (err, socket) => {
+                    assert.ok(err);
+                    assert.ok(!socket);
+                    assert.strictEqual(err.code, 'EPROXY');
+                    assert.strictEqual(err.message, 'Invalid response from proxy');
+                    server.close(done);
+                });
+            }
+        );
+    });
+
+    it('reports the HTTP status of a refused CONNECT', (t, done) => {
+        startRawProxy(
+            socket => socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'),
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', (err, socket) => {
+                    assert.ok(err);
+                    assert.ok(!socket);
+                    assert.strictEqual(err.code, 'EPROXY');
+                    assert.strictEqual(err.message, 'Invalid response from proxy: 403');
+                    server.close(done);
+                });
+            }
+        );
+    });
+
+    it('times out when the proxy never answers the CONNECT request', (t, done) => {
+        const previousTimeout = httpProxyClient.timeout;
+        httpProxyClient.timeout = 100;
+        startRawProxy(
+            () => {
+                // stay silent
+            },
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', (err, socket) => {
+                    httpProxyClient.timeout = previousTimeout;
+                    assert.ok(err);
+                    assert.ok(!socket);
+                    assert.strictEqual(err.code, 'ETIMEDOUT');
+                    assert.strictEqual(err.message, 'Proxy socket timed out');
+                    server.close(done);
+                });
+            }
+        );
+    });
+
+    it('lets SMTPConnection read a greeting that arrives together with the CONNECT response', (t, done) => {
+        startRawProxy(
+            socket => {
+                // the greeting shares the packet with the response headers, and SMTPConnection
+                // only attaches its own listener a tick after it gets the socket
+                socket.write('HTTP/1.1 200 Connection established\r\n\r\n220 smtp.example.com ESMTP\r\n');
+                socket.on('data', chunk => {
+                    if (/^EHLO /i.test(chunk.toString())) {
+                        socket.write('250 smtp.example.com\r\n');
+                    }
+                });
+            },
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', (err, socket) => {
+                    assert.ifError(err);
+                    const connection = new SMTPConnection({ connection: socket, greetingTimeout: 2000, logger: false });
+                    connection.once('error', err => {
+                        server.close();
+                        done(err);
+                    });
+                    connection.connect(() => {
+                        connection.close();
+                        server.close(() => done());
+                    });
+                });
+            }
+        );
+    });
+
+    it('fails when the proxy closes the connection without answering', (t, done) => {
+        startRawProxy(
+            socket => socket.end(),
+            (server, port) => {
+                const started = Date.now();
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', { timeout: 5000 }, (err, socket) => {
+                    assert.ok(err);
+                    assert.ok(!socket);
+                    assert.strictEqual(err.code, 'EPROXY');
+                    assert.ok(Date.now() - started < 2000);
+                    server.close(done);
+                });
+            }
+        );
+    });
+
+    it('limits the whole handshake, not the time between bytes', (t, done) => {
+        startRawProxy(
+            socket => {
+                // a byte at a time, never finishing the headers
+                const timer = setInterval(() => socket.write('X'), 20);
+                socket.on('close', () => clearInterval(timer));
+            },
+            (server, port) => {
+                const started = Date.now();
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, 'smtp.example.com', { timeout: 200 }, (err, socket) => {
+                    assert.ok(err);
+                    assert.ok(!socket);
+                    assert.strictEqual(err.code, 'ETIMEDOUT');
+                    assert.ok(Date.now() - started < 2000);
+                    server.close(done);
+                });
+            }
+        );
+    });
+
+    it('puts an IPv6 destination in brackets', (t, done) => {
+        let request = '';
+        startRawProxy(
+            (socket, req) => {
+                request = req;
+                socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+            },
+            (server, port) => {
+                httpProxyClient('http://127.0.0.1:' + port + '/', 25, '2001:db8::1', err => {
+                    assert.ok(err);
+                    assert.ok(request.startsWith('CONNECT [2001:db8::1]:25 HTTP/1.1\r\n'), request);
+                    assert.ok(request.includes('\r\nHost: [2001:db8::1]:25\r\n'), request);
+                    server.close(done);
+                });
+            }
+        );
+    });
+});

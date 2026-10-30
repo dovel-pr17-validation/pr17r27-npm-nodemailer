@@ -1,0 +1,1199 @@
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+
+//let http = require('http');
+import nmfetch from '../../src/fetch/index.js';
+import { createTransport } from '../../src/nodemailer.js';
+import http from 'node:http';
+import https from 'node:https';
+import zlib from 'node:zlib';
+import { PassThrough } from 'node:stream';
+import type { AddressInfo, Socket } from 'node:net';
+
+const HTTP_PORT = 19998;
+const HTTPS_PORT = 19993;
+
+const httpsOptions = {
+    key:
+        '-----BEGIN RSA PRIVATE KEY-----\n' +
+        'MIIEpAIBAAKCAQEA6Z5Qqhw+oWfhtEiMHE32Ht94mwTBpAfjt3vPpX8M7DMCTwHs\n' +
+        '1xcXvQ4lQ3rwreDTOWdoJeEEy7gMxXqH0jw0WfBx+8IIJU69xstOyT7FRFDvA1yT\n' +
+        'RXY2yt9K5s6SKken/ebMfmZR+03ND4UFsDzkz0FfgcjrkXmrMF5Eh5UXX/+9YHeU\n' +
+        'xlp0gMAt+/SumSmgCaysxZLjLpd4uXz+X+JVxsk1ACg1NoEO7lWJC/3WBP7MIcu2\n' +
+        'wVsMd2XegLT0gWYfT1/jsIH64U/mS/SVXC9QhxMl9Yfko2kx1OiYhDxhHs75RJZh\n' +
+        'rNRxgfiwgSb50Gw4NAQaDIxr/DJPdLhgnpY6UQIDAQABAoIBAE+tfzWFjJbgJ0ql\n' +
+        's6Ozs020Sh4U8TZQuonJ4HhBbNbiTtdDgNObPK1uNadeNtgW5fOeIRdKN6iDjVeN\n' +
+        'AuXhQrmqGDYVZ1HSGUfD74sTrZQvRlWPLWtzdhybK6Css41YAyPFo9k4bJ2ZW2b/\n' +
+        'p4EEQ8WsNja9oBpttMU6YYUchGxo1gujN8hmfDdXUQx3k5Xwx4KA68dveJ8GasIt\n' +
+        'd+0Jd/FVwCyyx8HTiF1FF8QZYQeAXxbXJgLBuCsMQJghlcpBEzWkscBR3Ap1U0Zi\n' +
+        '4oat8wrPZGCblaA6rNkRUVbc/+Vw0stnuJ/BLHbPxyBs6w495yBSjBqUWZMvljNz\n' +
+        'm9/aK0ECgYEA9oVIVAd0enjSVIyAZNbw11ElidzdtBkeIJdsxqhmXzeIFZbB39Gd\n' +
+        'bjtAVclVbq5mLsI1j22ER2rHA4Ygkn6vlLghK3ZMPxZa57oJtmL3oP0RvOjE4zRV\n' +
+        'dzKexNGo9gU/x9SQbuyOmuauvAYhXZxeLpv+lEfsZTqqrvPUGeBiEQcCgYEA8poG\n' +
+        'WVnykWuTmCe0bMmvYDsWpAEiZnFLDaKcSbz3O7RMGbPy1cypmqSinIYUpURBT/WY\n' +
+        'wVPAGtjkuTXtd1Cy58m7PqziB7NNWMcsMGj+lWrTPZ6hCHIBcAImKEPpd+Y9vGJX\n' +
+        'oatFJguqAGOz7rigBq6iPfeQOCWpmprNAuah++cCgYB1gcybOT59TnA7mwlsh8Qf\n' +
+        'bm+tSllnin2A3Y0dGJJLmsXEPKtHS7x2Gcot2h1d98V/TlWHe5WNEUmx1VJbYgXB\n' +
+        'pw8wj2ACxl4ojNYqWPxegaLd4DpRbtW6Tqe9e47FTnU7hIggR6QmFAWAXI+09l8y\n' +
+        'amssNShqjE9lu5YDi6BTKwKBgQCuIlKGViLfsKjrYSyHnajNWPxiUhIgGBf4PI0T\n' +
+        '/Jg1ea/aDykxv0rKHnw9/5vYGIsM2st/kR7l5mMecg/2Qa145HsLfMptHo1ZOPWF\n' +
+        '9gcuttPTegY6aqKPhGthIYX2MwSDMM+X0ri6m0q2JtqjclAjG7yG4CjbtGTt/UlE\n' +
+        'WMlSZwKBgQDslGeLUnkW0bsV5EG3AKRUyPKz/6DVNuxaIRRhOeWVKV101claqXAT\n' +
+        'wXOpdKrvkjZbT4AzcNrlGtRl3l7dEVXTu+dN7/ZieJRu7zaStlAQZkIyP9O3DdQ3\n' +
+        'rIcetQpfrJ1cAqz6Ng0pD0mh77vQ13WG1BBmDFa2A9BuzLoBituf4g==\n' +
+        '-----END RSA PRIVATE KEY-----',
+    cert:
+        '-----BEGIN CERTIFICATE-----\n' +
+        'MIICpDCCAYwCCQCuVLVKVTXnAjANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDEwls\n' +
+        'b2NhbGhvc3QwHhcNMTUwMjEyMTEzMjU4WhcNMjUwMjA5MTEzMjU4WjAUMRIwEAYD\n' +
+        'VQQDEwlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDp\n' +
+        'nlCqHD6hZ+G0SIwcTfYe33ibBMGkB+O3e8+lfwzsMwJPAezXFxe9DiVDevCt4NM5\n' +
+        'Z2gl4QTLuAzFeofSPDRZ8HH7wgglTr3Gy07JPsVEUO8DXJNFdjbK30rmzpIqR6f9\n' +
+        '5sx+ZlH7Tc0PhQWwPOTPQV+ByOuReaswXkSHlRdf/71gd5TGWnSAwC379K6ZKaAJ\n' +
+        'rKzFkuMul3i5fP5f4lXGyTUAKDU2gQ7uVYkL/dYE/swhy7bBWwx3Zd6AtPSBZh9P\n' +
+        'X+OwgfrhT+ZL9JVcL1CHEyX1h+SjaTHU6JiEPGEezvlElmGs1HGB+LCBJvnQbDg0\n' +
+        'BBoMjGv8Mk90uGCeljpRAgMBAAEwDQYJKoZIhvcNAQELBQADggEBABXm8GPdY0sc\n' +
+        'mMUFlgDqFzcevjdGDce0QfboR+M7WDdm512Jz2SbRTgZD/4na42ThODOZz9z1AcM\n' +
+        'zLgx2ZNZzVhBz0odCU4JVhOCEks/OzSyKeGwjIb4JAY7dh+Kju1+6MNfQJ4r1Hza\n' +
+        'SVXH0+JlpJDaJ73NQ2JyfqELmJ1mTcptkA/N6rQWhlzycTBSlfogwf9xawgVPATP\n' +
+        '4AuwgjHl12JI2HVVs1gu65Y3slvaHRCr0B4+Kg1GYNLLcbFcK+NEHrHmPxy9TnTh\n' +
+        'Zwp1dsNQU+Xkylz8IUANWSLHYZOMtN2e5SKIdwTtl5C8YxveuY8YKb1gDExnMraT\n' +
+        'VGXQDqPleug=\n' +
+        '-----END CERTIFICATE-----'
+};
+
+describe('NMFetch Tests', { timeout: 50 * 1000 }, () => {
+    let httpServer: http.Server, httpsServer: https.Server;
+
+    beforeEach((t, done) => {
+        httpServer = http.createServer((req, res) => {
+            switch (req.url) {
+                case '/redirectfile':
+                    // redirect to a scheme that can not be fetched, and keep the response
+                    // open so a request that is not aborted stays alive to time out later
+                    res.writeHead(302, {
+                        Location: 'file:///etc/passwd'
+                    });
+                    res.write(' ');
+                    break;
+
+                case '/redirect6':
+                    res.writeHead(302, {
+                        Location: '/redirect5'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect5':
+                    res.writeHead(302, {
+                        Location: '/redirect4'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect4':
+                    res.writeHead(302, {
+                        Location: '/redirect3'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect3':
+                    res.writeHead(302, {
+                        Location: '/redirect2'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect2':
+                    res.writeHead(302, {
+                        Location: '/redirect1'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect1':
+                    res.writeHead(302, {
+                        Location: '/'
+                    });
+                    res.end();
+                    break;
+
+                case '/forever':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.write('This connection is never closed');
+                    // never end the request
+                    break;
+
+                case '/gzip': {
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain',
+                        'Content-Encoding': 'gzip'
+                    });
+
+                    let stream = zlib.createGzip();
+                    stream.pipe(res);
+                    stream.end('Hello World HTTP\n');
+                    break;
+                }
+                case '/invalid':
+                    res.writeHead(500, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end('Hello World HTTP\n');
+                    break;
+
+                case '/auth':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end(Buffer.from((req.headers.authorization as string).split(' ').pop() as string, 'base64'));
+                    break;
+
+                case '/cookie':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end(req.headers.cookie);
+                    break;
+
+                case '/ua':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end(req.headers['user-agent']);
+                    break;
+
+                case '/post': {
+                    let body: Buffer[] = [];
+                    req.on('readable', () => {
+                        let chunk;
+                        while ((chunk = req.read()) !== null) {
+                            body.push(chunk);
+                        }
+                    });
+                    req.on('end', () => {
+                        res.writeHead(200, {
+                            'Content-Type': 'text/plain'
+                        });
+                        res.end(Buffer.concat(body));
+                    });
+
+                    break;
+                }
+
+                case '/crosshost':
+                    // redirect to a different hostname (127.0.0.1 vs localhost)
+                    res.writeHead(302, {
+                        Location: 'http://127.0.0.1:' + HTTP_PORT + '/show-auth'
+                    });
+                    res.end();
+                    break;
+
+                case '/samehost':
+                    // redirect within the same hostname
+                    res.writeHead(302, {
+                        Location: '/show-auth'
+                    });
+                    res.end();
+                    break;
+
+                case '/show-auth':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end(req.headers.authorization || 'NO_AUTH');
+                    break;
+
+                default:
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end('Hello World HTTP\n');
+            }
+        });
+
+        httpsServer = https.createServer(httpsOptions, (req, res) => {
+            if (req.url === '/downgrade') {
+                // redirect to plain HTTP on the same host
+                res.writeHead(302, {
+                    Location: 'http://localhost:' + HTTP_PORT + '/show-auth'
+                });
+                res.end();
+                return;
+            }
+            res.writeHead(200, {
+                'Content-Type': 'text/plain'
+            });
+            res.end('Hello World HTTPS\n');
+        });
+
+        httpServer.listen(HTTP_PORT, () => {
+            httpsServer.listen(HTTPS_PORT, done);
+        });
+    });
+
+    afterEach((t, done) => {
+        httpServer.close(() => {
+            httpsServer.close(done);
+        });
+    });
+
+    it('should fetch HTTP data', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT);
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTP\n');
+            done();
+        });
+    });
+
+    it('should fetch HTTPS data', (t, done) => {
+        // test server uses a self-signed cert, so opt out of validation here
+        let req = nmfetch('https://localhost:' + HTTPS_PORT, {
+            tls: {
+                rejectUnauthorized: false
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTPS\n');
+            done();
+        });
+    });
+
+    it('should fetch HTTP data with redirects', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/redirect3');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTP\n');
+            done();
+        });
+    });
+
+    it('should return error for too many redirects', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/redirect6');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should fetch HTTP data with custom redirect limit', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/redirect3', {
+            maxRedirects: 3
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTP\n');
+            done();
+        });
+    });
+
+    it('should return error for custom redirect limit', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/redirect3', {
+            maxRedirects: 2
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should return disable redirects', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/redirect1', {
+            maxRedirects: 0
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should unzip compressed HTTP data', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/gzip');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTP\n');
+            done();
+        });
+    });
+
+    it('should return error for unresolved host', (t, done) => {
+        let req = nmfetch('http://asfhaskhhgbjdsfhgbsdjgk');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should return error for invalid status', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/invalid');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should allow invalid status', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/invalid', {
+            allowErrorResponse: true
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(!err);
+        });
+        req.on('end', () => {
+            assert.strictEqual(req.statusCode, 500);
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTP\n');
+            done();
+        });
+    });
+
+    it('should return error for invalid url', (t, done) => {
+        let req = nmfetch('http://localhost:99999999/');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should return timeout error', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/forever', {
+            timeout: 1000
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should handle basic HTTP auth', (t, done) => {
+        let req = nmfetch('http://user:pass@localhost:' + HTTP_PORT + '/auth');
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'user:pass');
+            done();
+        });
+    });
+
+    if (!/^0\.10\./.test(process.versions.node)) {
+        // disabled for node 0.10
+        it('should return error for invalid protocol', (t, done) => {
+            let req = nmfetch('http://localhost:' + HTTPS_PORT);
+            let buf: Buffer[] = [];
+            req.on('data', chunk => {
+                buf.push(chunk);
+            });
+            req.on('error', err => {
+                assert.ok(err);
+                done();
+            });
+            req.on('end', () => {});
+        });
+    }
+
+    for (let url of ['file:///etc/passwd', 'gopher://localhost/x', 'http://localhost \u0000.example.com/x']) {
+        it('should return error for unusable URL ' + JSON.stringify(url), (t, done) => {
+            // the last one does not parse at all, which used to throw synchronously out of
+            // urllib.parse before the protocol check ever ran
+            let req = nmfetch(url);
+            req.on('data', () => {
+                done(new Error('unusable URL fetch should not have produced data'));
+            });
+            req.on('error', (err: any) => {
+                assert.ok(err);
+                assert.strictEqual(err.code, 'EFETCH');
+                assert.strictEqual(err.sourceUrl, url);
+                done();
+            });
+            req.on('end', () => {
+                done(new Error('unusable URL fetch should have failed'));
+            });
+        });
+    }
+
+    it('should emit a single error for a redirect to an unusable URL', (t, done) => {
+        // the window has to outlast the idle timeout below, which is what would produce a
+        // second error if the redirect branch did not abort this request
+        let errors: any[] = [];
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/redirectfile', { timeout: 300 });
+
+        req.on('data', () => false);
+        req.on('error', err => {
+            errors.push(err);
+        });
+
+        setTimeout(() => {
+            assert.strictEqual(errors.length, 1);
+            assert.strictEqual(errors[0].code, 'EFETCH');
+            assert.strictEqual(errors[0].sourceUrl, 'file:///etc/passwd');
+            done();
+        }, 500);
+    });
+
+    it('should release a body stream when the URL is refused', (t, done) => {
+        let body = new PassThrough();
+        let req = nmfetch('file:///etc/passwd', { method: 'POST', body });
+
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.strictEqual(body.destroyed, true);
+            // an error on the abandoned body must not reach the process as an uncaught one
+            body.emit('error', new Error('body blew up'));
+            setImmediate(done);
+        });
+    });
+
+    // Node.js 25+ started with --permission and without --allow-net fails the DNS lookup of the
+    // request with ERR_ACCESS_DENIED, which must not be relabeled as EFETCH
+    it('should keep ERR_ACCESS_DENIED when the permission model denies the request', (t, done) => {
+        const request = http.request;
+        t.mock.method(http, 'request', (options: http.RequestOptions) =>
+            request({
+                ...options,
+                lookup: (hostname, lookupOptions, callback) =>
+                    callback(Object.assign(new Error('getaddrinfo ERR_ACCESS_DENIED ' + hostname), { code: 'ERR_ACCESS_DENIED' }), '', 0)
+            })
+        );
+
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/');
+        req.on('data', () => done(new Error('a denied request should not have produced data')));
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'ERR_ACCESS_DENIED');
+            assert.strictEqual(err.sourceUrl, 'http://localhost:' + HTTP_PORT + '/');
+            done();
+        });
+    });
+
+    it('should keep ERR_ACCESS_DENIED when creating the request throws it', (t, done) => {
+        t.mock.method(http, 'request', () => {
+            throw Object.assign(new Error('Access to this API has been restricted.'), { code: 'ERR_ACCESS_DENIED' });
+        });
+
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/');
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'ERR_ACCESS_DENIED');
+            done();
+        });
+    });
+
+    it('should not let an own __proto__ key of options.headers mutate the prototype chain', (t, done) => {
+        // options.headers is the caller's httpHeaders, straight off an attachment
+        const mocked = t.mock.method(http, 'request');
+
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/', {
+            headers: JSON.parse('{"x-real":"1","__proto__":{"authorization":"secret"}}')
+        });
+
+        req.on('data', () => false);
+        req.on('end', () => {
+            const seen = (mocked.mock.calls[0].arguments[0] as any).headers;
+            assert.strictEqual(Object.getPrototypeOf(seen), Object.prototype);
+            assert.strictEqual(seen['x-real'], '1');
+            assert.strictEqual(seen.authorization, undefined);
+            done();
+        });
+        req.on('error', done);
+    });
+
+    it('should not let options.tls repoint the request', (t, done) => {
+        const mocked = t.mock.method(http, 'request');
+
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/', {
+            tls: {
+                host: 'evil.invalid',
+                port: 1234,
+                path: '/pwn',
+                socketPath: '/var/run/docker.sock',
+                lookup: () => false,
+                rejectUnauthorized: false
+            }
+        });
+
+        req.on('data', () => false);
+        req.on('end', () => {
+            const seen = mocked.mock.calls[0].arguments[0] as any;
+            assert.strictEqual(seen.host, 'localhost');
+            assert.strictEqual(Number(seen.port), HTTP_PORT);
+            assert.strictEqual(seen.path, '/');
+            assert.strictEqual(seen.socketPath, undefined);
+            assert.strictEqual(seen.lookup, undefined);
+            // a genuine TLS setting still gets through
+            assert.strictEqual(seen.rejectUnauthorized, false);
+            done();
+        });
+        req.on('error', done);
+    });
+
+    it('should set cookie value', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/cookie', {
+            cookie: 'test=pest'
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'test=pest');
+            done();
+        });
+    });
+
+    it('should set user agent', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/ua', {
+            userAgent: 'nodemailer-fetch'
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'nodemailer-fetch');
+            done();
+        });
+    });
+
+    it('should post data', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/post', {
+            method: 'post',
+            body: {
+                hello: 'world 😭',
+                another: 'value'
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'hello=world%20%F0%9F%98%AD&another=value');
+            done();
+        });
+    });
+
+    it('should post stream data', (t, done) => {
+        let body = new PassThrough();
+        let data = Buffer.from('hello=world%20%F0%9F%98%AD&another=value');
+
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/post', {
+            method: 'post',
+            body
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), data.toString());
+            done();
+        });
+
+        let pos = 0;
+        let writeNext = () => {
+            if (pos >= data.length) {
+                return body.end();
+            }
+            let char = data.slice(pos++, pos);
+            body.write(char);
+            setImmediate(writeNext);
+        };
+
+        setImmediate(writeNext);
+    });
+
+    it('should return error for invalid cert', (t, done) => {
+        let req = nmfetch('https://localhost:' + HTTPS_PORT, {
+            tls: {
+                rejectUnauthorized: true
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should reject a self-signed cert by default', (t, done) => {
+        // no tls option provided, certificates must be validated by default
+        let req = nmfetch('https://localhost:' + HTTPS_PORT);
+        req.on('data', () => {});
+        req.on('error', err => {
+            assert.ok(err);
+            done();
+        });
+        req.on('end', () => {});
+    });
+
+    it('should allow a self-signed cert when rejectUnauthorized is false', (t, done) => {
+        let req = nmfetch('https://localhost:' + HTTPS_PORT, {
+            tls: {
+                rejectUnauthorized: false
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Hello World HTTPS\n');
+            done();
+        });
+    });
+
+    it('should drop the Authorization header on a cross-host redirect', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/crosshost', {
+            headers: {
+                Authorization: 'Bearer SECRET_TOKEN'
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'NO_AUTH');
+            done();
+        });
+    });
+
+    it('should keep the Authorization header on a same-host redirect', (t, done) => {
+        let req = nmfetch('http://localhost:' + HTTP_PORT + '/samehost', {
+            headers: {
+                Authorization: 'Bearer SECRET_TOKEN'
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'Bearer SECRET_TOKEN');
+            done();
+        });
+    });
+
+    it('should drop the Authorization header on an https to http downgrade redirect', (t, done) => {
+        let req = nmfetch('https://localhost:' + HTTPS_PORT + '/downgrade', {
+            tls: {
+                rejectUnauthorized: false
+            },
+            headers: {
+                Authorization: 'Bearer SECRET_TOKEN'
+            }
+        });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'NO_AUTH');
+            done();
+        });
+    });
+});
+
+describe('NMFetch credentials on redirect', { timeout: 10 * 1000 }, () => {
+    const sensitive = ['authorization', 'cookie', 'proxy-authorization'];
+
+    const listen = (handler: http.RequestListener): Promise<http.Server> =>
+        new Promise(resolve => {
+            const server = http.createServer(handler);
+            server.listen(0, '127.0.0.1', () => resolve(server));
+        });
+    const portOf = (server: http.Server) => (server.address() as AddressInfo).port;
+
+    // an origin that redirects to `location(target)` and a target that records the credentials it got
+    const redirectServers = async (location: (targetPort: number) => string) => {
+        const received: string[] = [];
+        const target = await listen((req, res) => {
+            received.push(...sensitive.filter(key => key in req.headers));
+            res.end('ok');
+        });
+        const origin = await listen((req, res) => {
+            res.writeHead(302, { Location: location(portOf(target)) });
+            res.end();
+        });
+        return {
+            received,
+            originPort: portOf(origin),
+            close: () => {
+                origin.close();
+                target.close();
+            }
+        };
+    };
+
+    const fetchAll = (url: string, headers: http.OutgoingHttpHeaders): Promise<void> =>
+        new Promise((resolve, reject) => {
+            const req = nmfetch(url, { headers });
+            req.on('error', reject);
+            req.on('end', resolve);
+            req.resume();
+        });
+
+    it('drops sensitive headers whose names are padded with whitespace on a cross-host redirect', async () => {
+        const servers = await redirectServers(port => 'http://127.0.0.1:' + port + '/');
+        try {
+            await fetchAll('http://localhost:' + servers.originPort + '/', {
+                ' Authorization ': 'Bearer SECRET_TOKEN',
+                '\tCookie': 'session=SECRET',
+                'Proxy-Authorization ': 'Basic SECRET'
+            });
+            assert.deepStrictEqual(servers.received, []);
+        } finally {
+            servers.close();
+        }
+    });
+
+    it('drops the Authorization header on a redirect to another port of the same host', async () => {
+        const servers = await redirectServers(port => 'http://127.0.0.1:' + port + '/');
+        try {
+            await fetchAll('http://127.0.0.1:' + servers.originPort + '/', { Authorization: 'Bearer SECRET_TOKEN' });
+            assert.deepStrictEqual(servers.received, []);
+        } finally {
+            servers.close();
+        }
+    });
+
+    it('does not forward the httpHeaders of an attachment to another host', async () => {
+        const servers = await redirectServers(port => 'http://127.0.0.1:' + port + '/');
+        try {
+            await createTransport({ streamTransport: true, buffer: true }).sendMail({
+                from: 'a@example.com',
+                to: 'b@example.com',
+                text: 'test',
+                attachments: [
+                    {
+                        filename: 'test.txt',
+                        href: 'http://localhost:' + servers.originPort + '/',
+                        httpHeaders: { ' Authorization ': 'Bearer SECRET_TOKEN' }
+                    }
+                ]
+            });
+            assert.deepStrictEqual(servers.received, []);
+        } finally {
+            servers.close();
+        }
+    });
+});
+
+describe('NMFetch request and response handling', { timeout: 50 * 1000 }, () => {
+    let server: http.Server;
+    let base: string;
+    let redirectSockets: Socket[] = [];
+
+    beforeEach((t, done) => {
+        redirectSockets = [];
+        server = http.createServer((req, res) => {
+            switch (req.url) {
+                case '/setcookie':
+                    res.writeHead(302, {
+                        'Set-Cookie': ['sess=abc; Path=/', 'other=1; Path=/elsewhere/'],
+                        Location: '/cookie'
+                    });
+                    res.end();
+                    break;
+
+                case '/cookie':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end(req.headers.cookie || 'NO_COOKIE');
+                    break;
+
+                case '/badgzip':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain',
+                        'Content-Encoding': 'gzip'
+                    });
+                    res.end('this is not gzip');
+                    break;
+
+                case '/abort':
+                    // announce a body and drop the connection before it is complete
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain',
+                        'Content-Length': '100'
+                    });
+                    res.write('partial');
+                    setImmediate(() => req.socket.destroy());
+                    break;
+
+                case '/badlocation':
+                    // a space is legal in a header value but not in a host
+                    res.writeHead(302, {
+                        Location: 'http://exa mple.com/'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect-post':
+                    res.writeHead(302, {
+                        Location: '/echo'
+                    });
+                    res.end();
+                    break;
+
+                case '/redirect-open':
+                    // a redirect whose body never ends, the client has to let go of it
+                    redirectSockets.push(req.socket);
+                    res.writeHead(302, {
+                        Location: '/echo'
+                    });
+                    res.write(' ');
+                    break;
+
+                case '/drip': {
+                    // a byte within every inactivity window, only an overall deadline ends it
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    const drip = setInterval(() => res.write('.'), 20);
+                    req.socket.once('close', () => clearInterval(drip));
+                    break;
+                }
+
+                case '/slow-redirect':
+                    // takes its time before sending the client on to the dripping route
+                    setTimeout(() => {
+                        res.writeHead(302, {
+                            Location: '/drip'
+                        });
+                        res.end();
+                    }, 400);
+                    break;
+
+                case '/big':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain'
+                    });
+                    res.end(Buffer.alloc(4096, 'a'));
+                    break;
+
+                case '/big-gzip':
+                    res.writeHead(200, {
+                        'Content-Type': 'text/plain',
+                        'Content-Encoding': 'gzip'
+                    });
+                    res.end(zlib.gzipSync(Buffer.alloc(4096, 'a')));
+                    break;
+
+                default: {
+                    let chunks: Buffer[] = [];
+                    req.on('data', chunk => chunks.push(chunk));
+                    req.on('end', () => {
+                        res.writeHead(200, {
+                            'Content-Type': 'application/json'
+                        });
+                        res.end(
+                            JSON.stringify({
+                                method: req.method,
+                                headers: req.headers,
+                                body: Buffer.concat(chunks).toString()
+                            })
+                        );
+                    });
+                }
+            }
+        });
+
+        server.listen(0, () => {
+            base = 'http://localhost:' + (server.address() as AddressInfo).port;
+            done();
+        });
+    });
+
+    afterEach((t, done) => {
+        server.close(() => done());
+        // a request whose body stream failed is left open by the client, do not wait for it.
+        // Ordered after close(): Bun reports the server as not running once its
+        // connections are gone
+        server.closeAllConnections();
+    });
+
+    // Fetches the echo route and hands back what the server saw of the request
+    let fetchEcho = (options: any, callback: (err: any, echo?: any) => void) => {
+        let req = nmfetch(base + '/echo', options);
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', err => callback(err));
+        req.on('end', () => callback(null, JSON.parse(Buffer.concat(buf).toString())));
+    };
+
+    it('should post a trimmed string body as a form', (t, done) => {
+        fetchEcho({ body: '  hello=world  ' }, (err, echo) => {
+            assert.ok(!err);
+            assert.strictEqual(echo.method, 'POST');
+            assert.strictEqual(echo.headers['content-type'], 'application/x-www-form-urlencoded');
+            assert.strictEqual(echo.headers['content-length'], '11');
+            assert.strictEqual(echo.body, 'hello=world');
+            done();
+        });
+    });
+
+    it('should send a Buffer body with the given content type and method', (t, done) => {
+        fetchEcho({ body: Buffer.from('raw bytes'), contentType: 'application/octet-stream', method: 'put' }, (err, echo) => {
+            assert.ok(!err);
+            assert.strictEqual(echo.method, 'PUT');
+            assert.strictEqual(echo.headers['content-type'], 'application/octet-stream');
+            assert.strictEqual(echo.headers['content-length'], '9');
+            assert.strictEqual(echo.body, 'raw bytes');
+            done();
+        });
+    });
+
+    it('should stream a body without a content type when contentType is false', (t, done) => {
+        let body = new PassThrough();
+
+        fetchEcho({ body, contentType: false }, (err, echo) => {
+            assert.ok(!err);
+            assert.strictEqual(echo.method, 'POST');
+            assert.strictEqual(echo.headers['transfer-encoding'], 'chunked');
+            assert.ok(!('content-type' in echo.headers));
+            assert.ok(!('content-length' in echo.headers));
+            assert.strictEqual(echo.body, 'streamed');
+            done();
+        });
+
+        setImmediate(() => body.end('streamed'));
+    });
+
+    it('should report an error of the body stream', (t, done) => {
+        let body = new PassThrough();
+
+        fetchEcho({ method: 'post', body }, (err, echo) => {
+            assert.ok(err);
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.strictEqual(err.message, 'body failed');
+            assert.strictEqual(err.sourceUrl, base + '/echo');
+            assert.ok(!echo);
+            done();
+        });
+
+        setImmediate(() => body.emit('error', new Error('body failed')));
+    });
+
+    it('should store response cookies in the jar and send them on the redirect', (t, done) => {
+        let jar = new nmfetch.Cookies();
+        let req = nmfetch(base + '/setcookie', { cookies: jar });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', done);
+        req.on('end', () => {
+            assert.strictEqual(Buffer.concat(buf).toString(), 'sess=abc');
+            // both cookies are kept, only the one whose path matches is sent
+            assert.strictEqual(jar.cookies.length, 2);
+            assert.strictEqual(jar.get(base + '/cookie'), 'sess=abc');
+            assert.strictEqual(jar.get(base + '/elsewhere/page'), 'sess=abc; other=1');
+            done();
+        });
+    });
+
+    it('should fail on a response that claims to be gzipped but is not', (t, done) => {
+        let req = nmfetch(base + '/badgzip');
+        req.on('data', () => false);
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.strictEqual(err.sourceUrl, base + '/badgzip');
+            assert.ok(/header/i.test(err.message));
+            done();
+        });
+        req.on('end', () => {
+            done(new Error('a corrupt gzip body should have failed'));
+        });
+    });
+
+    it('should fail when the connection drops before the response is complete', (t, done) => {
+        let req = nmfetch(base + '/abort');
+        req.on('data', () => false);
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.strictEqual(err.message, 'aborted');
+            assert.strictEqual(err.sourceUrl, base + '/abort');
+            done();
+        });
+        req.on('end', () => {
+            done(new Error('a truncated response should have failed'));
+        });
+    });
+
+    it('should refuse a redirect to a location that does not parse', (t, done) => {
+        let req = nmfetch(base + '/badlocation');
+        req.on('data', () => false);
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.strictEqual(err.message, 'Unsupported protocol for URL http://exa mple.com/');
+            assert.strictEqual(err.sourceUrl, 'http://exa mple.com/');
+            done();
+        });
+        req.on('end', () => {
+            done(new Error('an unparseable redirect should have failed'));
+        });
+    });
+
+    it('should follow a redirect of a POST with a GET and no body', (t, done) => {
+        let req = nmfetch(base + '/redirect-post', { body: 'a=1' });
+        let buf: Buffer[] = [];
+        req.on('data', chunk => {
+            buf.push(chunk);
+        });
+        req.on('error', done);
+        req.on('end', () => {
+            let echo = JSON.parse(Buffer.concat(buf).toString());
+            assert.strictEqual(echo.method, 'GET');
+            assert.strictEqual(echo.body, '');
+            assert.ok(!('content-type' in echo.headers));
+            assert.ok(!('content-length' in echo.headers));
+            done();
+        });
+    });
+
+    it('should release a redirect response before following it', (t, done) => {
+        let req = nmfetch(base + '/redirect-open', { timeout: 300 });
+        let errors: Error[] = [];
+        req.on('data', () => false);
+        req.on('error', err => errors.push(err));
+        req.on('end', () => {
+            assert.deepStrictEqual(errors, []);
+            assert.strictEqual(redirectSockets.length, 1);
+            // a released request has its socket, and with it the pending timeout, destroyed
+            const socket = redirectSockets[0];
+            if (socket.destroyed) {
+                return done();
+            }
+            socket.once('close', () => done());
+        });
+    });
+
+    it('should apply a default timeout when none is given', () => {
+        // a stalled server can not be waited out in a test, the default is pinned instead. The
+        // other tests cover that a configured timeout is applied
+        assert.strictEqual(nmfetch.DEFAULT_TIMEOUT, 60 * 1000);
+    });
+
+    it('should apply a default time limit to the whole request when none is given', () => {
+        assert.strictEqual(nmfetch.DEFAULT_MAX_TIME, 2 * 60 * 1000);
+    });
+
+    it('should give up on a response that keeps dripping past maxTime', (t, done) => {
+        // every byte resets the inactivity timeout, so without an overall limit the request,
+        // and the message waiting on it, stayed open for as long as the server liked
+        const started = Date.now();
+        let req = nmfetch(base + '/drip', { timeout: 2000, maxTime: 300 });
+        req.on('data', () => false);
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.match(err.message, /exceeded the allowed 300 ms/);
+            assert.ok(Date.now() - started < 1500, 'took ' + (Date.now() - started) + ' ms');
+            done();
+        });
+        req.on('end', () => done(new Error('the response must not end')));
+    });
+
+    it('should count the time spent on redirects against maxTime', (t, done) => {
+        // one deadline for the whole chain: the 400 ms redirect plus a fresh 600 ms limit
+        // would come to a second, the shared deadline ends it at 600 ms
+        const started = Date.now();
+        let req = nmfetch(base + '/slow-redirect', { timeout: 2000, maxTime: 600 });
+        req.on('data', () => false);
+        req.on('error', (err: any) => {
+            assert.strictEqual(err.code, 'EFETCH');
+            assert.match(err.message, /exceeded the allowed 600 ms/);
+            assert.ok(Date.now() - started < 900, 'took ' + (Date.now() - started) + ' ms');
+            done();
+        });
+        req.on('end', () => done(new Error('the response must not end')));
+    });
+
+    for (const path of ['/big', '/big-gzip']) {
+        it('should refuse a response body larger than maxBytes on ' + path, (t, done) => {
+            let req = nmfetch(base + path, { maxBytes: 1000 });
+            req.on('data', () => false);
+            req.on('error', (err: any) => {
+                assert.strictEqual(err.code, 'EFETCH');
+                assert.match(err.message, /exceeds the allowed 1000 bytes/);
+                done();
+            });
+            req.on('end', () => done(new Error('the body must not be accepted')));
+        });
+
+        it('should accept a response body within maxBytes on ' + path, (t, done) => {
+            let req = nmfetch(base + path, { maxBytes: 4096 });
+            let size = 0;
+            req.on('data', chunk => (size += chunk.length));
+            req.on('error', done);
+            req.on('end', () => {
+                assert.strictEqual(size, 4096);
+                done();
+            });
+        });
+    }
+});

@@ -1,0 +1,1892 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import path from 'node:path';
+import stream from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import MailComposer from '../../src/mail-composer/index.js';
+import type MimeNode from '../../src/mime-node/index.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+describe('MailComposer unit tests', () => {
+    it('should create new MailComposer', () => {
+        assert.ok(new MailComposer({}));
+    });
+
+    describe('#compile', () => {
+        it('should use Mixed structure with text and attachment', t => {
+            let data = {
+                text: 'abc',
+                attachments: [
+                    {
+                        content: 'abc'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createMixed');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            t.mock.restoreAll();
+        });
+
+        it('should use Mixed structure with multiple attachments', t => {
+            let data = {
+                attachments: [
+                    {
+                        content: 'abc'
+                    },
+                    {
+                        content: 'def'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createMixed');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            t.mock.restoreAll();
+        });
+
+        it('should create Alternative structure with text and html', t => {
+            let data = {
+                text: 'abc',
+                html: 'def'
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createAlternative');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            assert.strictEqual(compiler._alternatives.length, 2);
+            assert.strictEqual(compiler._alternatives[0].contentType, 'text/plain; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[1].contentType, 'text/html; charset=utf-8');
+            t.mock.restoreAll();
+        });
+
+        it('should create Alternative structure with text, watchHtml and html', t => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                watchHtml: 'ghi'
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createAlternative');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            assert.strictEqual(compiler._alternatives.length, 3);
+            assert.strictEqual(compiler._alternatives[0].contentType, 'text/plain; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[1].contentType, 'text/watch-html; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[2].contentType, 'text/html; charset=utf-8');
+            t.mock.restoreAll();
+        });
+
+        it('should create Alternative structure with text, amp and html', t => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                amp: 'ghi'
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createAlternative');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            assert.strictEqual(compiler._alternatives.length, 3);
+            assert.strictEqual(compiler._alternatives[0].contentType, 'text/plain; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[1].contentType, 'text/x-amp-html; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[2].contentType, 'text/html; charset=utf-8');
+            t.mock.restoreAll();
+        });
+
+        it('should create Alternative structure with text, icalEvent and html', t => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                icalEvent: 'ghi'
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createAlternative');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            assert.strictEqual(compiler._alternatives.length, 3);
+            assert.strictEqual(compiler._alternatives[0].contentType, 'text/plain; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[1].contentType, 'text/html; charset=utf-8');
+            assert.strictEqual(compiler._alternatives[2].contentType, 'text/calendar; charset=utf-8; method=PUBLISH');
+            t.mock.restoreAll();
+        });
+
+        it('should create Alternative structure using encoded icalEvent', (t, done) => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                icalEvent: {
+                    method: 'publish',
+                    content:
+                        'dGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZQ==',
+                    encoding: 'base64'
+                }
+            };
+
+            let compiler = new MailComposer(data);
+            t.mock.method(compiler, '_createAlternative');
+            compiler.compile().build((err, message) => {
+                assert.ok(!err);
+                let msg = message.toString();
+                assert.ok(
+                    msg.indexOf('\r\ntere tere tere tere tere tere tere tere tere tere tere tere tere tere tere =\r\ntere tere tere tere tere tere tere\r\n') >=
+                        0
+                );
+                assert.ok(
+                    msg.indexOf(
+                        '\r\ndGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRl\r\ncmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZSB0ZXJlIHRlcmUgdGVyZQ==\r\n'
+                    ) >= 0
+                );
+                t.mock.restoreAll();
+                done();
+            });
+        });
+
+        it('should create Alternative structure with text, html and cid attachment', t => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                attachments: [
+                    {
+                        content: 'abc',
+                        cid: 'aaa'
+                    },
+                    {
+                        content: 'def',
+                        cid: 'bbb'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createAlternative');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            t.mock.restoreAll();
+        });
+
+        it('should create Related structure with html and cid attachment', t => {
+            let data = {
+                html: 'def',
+                attachments: [
+                    {
+                        content: 'abc',
+                        cid: 'aaa'
+                    },
+                    {
+                        content: 'def',
+                        cid: 'bbb'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createRelated');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            t.mock.restoreAll();
+        });
+
+        it('should create content node with only text', t => {
+            let data = {
+                text: 'def'
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createContentNode');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            t.mock.restoreAll();
+        });
+
+        it('should create content node with only an attachment', t => {
+            let data = {
+                attachments: [
+                    {
+                        content: 'abc',
+                        cid: 'aaa'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            const fn = t.mock.method(compiler, '_createContentNode');
+            compiler.compile();
+            assert.strictEqual(fn.mock.callCount(), 1);
+            t.mock.restoreAll();
+        });
+
+        it('should create content node with encoded buffer', () => {
+            let str = 'tere tere';
+            let data = {
+                text: {
+                    content: Buffer.from(str).toString('base64'),
+                    encoding: 'base64'
+                }
+            };
+
+            let compiler = new MailComposer(data);
+            compiler.compile();
+            assert.deepStrictEqual((compiler.message as MimeNode).content, Buffer.from(str));
+        });
+
+        it('should create content node from data url', () => {
+            let str = 'tere tere';
+            let data = {
+                attachments: [
+                    {
+                        href: 'data:image/png,tere%20tere'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            let mail = compiler.compile();
+            assert.ok(mail.messageId());
+            assert.deepStrictEqual(compiler.mail.attachments![0].content, Buffer.from(str));
+            assert.strictEqual(compiler.mail.attachments![0].contentType, 'image/png');
+        });
+
+        it('should not treat invalid content-type as multipart', () => {
+            let data = {
+                from: {
+                    name: 'sender name',
+                    address: 'sender@example.com'
+                },
+                to: [
+                    {
+                        address: 'andris@ethereal.email'
+                    }
+                ],
+                subject: 'Hello world!',
+                text: 'Test message',
+                attachments: [
+                    {
+                        contentType: 'other',
+                        content: Buffer.from('tere').toString('base64'),
+                        encoding: 'base64'
+                    }
+                ]
+            };
+
+            let compiler = new MailComposer(data);
+            let mail = compiler.compile();
+            let attachmentHeaders = mail.childNodes[1].buildHeaders();
+
+            // attachment header must not contain mutipart header
+            assert.ok(attachmentHeaders.indexOf('boundary=') < 0);
+        });
+
+        it('should not let boundary material inject lines into the multipart structure', (t, done) => {
+            // baseBoundary and boundaryPrefix are read off the mail data, so an application that
+            // spreads untrusted input into sendMail() hands them to the composer. A line break in
+            // either used to survive into the delimiter lines while the declared boundary went out
+            // RFC2231 encoded, which put attacker text exactly where a part's headers are read
+            // from (GHSA pending, fixed in #1867)
+            let compiler = new MailComposer({
+                from: 'a@b.com',
+                to: 'c@d.com',
+                text: 'plain body',
+                html: '<b>html body</b>',
+                baseBoundary: 'X\r\nX-Evil: injected\r\nX\u0000',
+                boundaryPrefix: '--P\r\nX'
+            } as any);
+
+            compiler.compile().build((err, msg) => {
+                assert.ok(!err);
+                let raw = msg.toString();
+                let boundary = (compiler as any).message.boundary as string;
+
+                assert.ok(!/[\r\n]/.test(boundary), 'boundary must stay on one line');
+                assert.ok(!/^X-Evil:/m.test(raw), 'no injected line may appear anywhere in the message');
+                assert.ok(!/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(raw), 'no control character may reach the wire');
+                // whatever the boundary ended up being, the delimiters have to match it exactly
+                assert.ok(raw.includes('\r\n--' + boundary + '\r\n'), 'delimiter must match the declared boundary');
+                assert.ok(raw.includes('\r\n--' + boundary + '--\r\n'), 'closing delimiter must match the declared boundary');
+                done();
+            });
+        });
+
+        it('should create the same output', (t, done) => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                baseBoundary: 'test',
+                messageId: '<zzzzzz>',
+                headers: {
+                    'x-processed': 'a really long header or value with non-ascii characters 👮',
+                    'x-unprocessed': {
+                        prepared: true,
+                        value: 'a really long header or value with non-ascii characters 👮'
+                    }
+                },
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'X-Processed: =?UTF-8?Q?a_really_long_header_or_value_with_non-a?=\r\n' +
+                ' =?UTF-8?Q?scii_characters_=F0=9F=91=AE?=\r\n' +
+                'X-Unprocessed: a really long header or value with non-ascii characters 👮\r\n' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/alternative; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/html; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'def\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            assert.strictEqual(mail.messageId(), '<zzzzzz>');
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should use raw input for the message', (t, done) => {
+            let data = {
+                raw: 'test test test\r\n',
+                envelope: {
+                    from: 'Daemon <deamon@kreata.ee>',
+                    to: 'mailer@kreata.ee, Mailer <mailer2@kreata.ee>'
+                }
+            };
+
+            let expected = 'test test test\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.deepStrictEqual(mail.getEnvelope(), {
+                    from: 'deamon@kreata.ee',
+                    to: ['mailer@kreata.ee', 'mailer2@kreata.ee']
+                });
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should use raw input for different parts', (t, done) => {
+            let data = {
+                from: 'test1@example.com',
+                to: 'test2@example.com',
+                bcc: 'test3@example.com',
+                text: {
+                    raw: 'rawtext'
+                },
+                html: {
+                    raw: 'rawhtml'
+                },
+                watchHtml: {
+                    raw: 'rawwatch'
+                },
+                amp: {
+                    raw: 'rawamp'
+                },
+                messageId: 'rawtest',
+                icalEvent: {
+                    raw: 'rawcalendar'
+                },
+                attachments: [
+                    {
+                        raw: 'rawattachment'
+                    }
+                ],
+                alternatives: [
+                    {
+                        raw: 'rawalternative'
+                    }
+                ],
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                baseBoundary: 'test'
+            };
+
+            let expected =
+                'From: test1@example.com\r\n' +
+                'To: test2@example.com\r\n' +
+                'Message-ID: <rawtest>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: multipart/alternative; boundary="--_NmP-test-Part_2"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'rawtext\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'rawwatch\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'rawamp\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'rawhtml\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'rawcalendar\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'rawalternative\r\n' +
+                '----_NmP-test-Part_2--\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'rawattachment\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'rawcalendar\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should discard BCC', (t, done) => {
+            let data = {
+                from: 'test1@example.com',
+                to: 'test2@example.com',
+                bcc: 'test3@example.com',
+                text: 'def',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'From: test1@example.com\r\n' +
+                'To: test2@example.com\r\n' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                '\r\n' +
+                'def\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should autodetect text encoding', (t, done) => {
+            let data = {
+                from: 'ÄÄÄÄ test1@example.com',
+                to: 'AAAÄ test2@example.com',
+                subject: 'def ÄÄÄÄ foo AAAÄ',
+                text: 'def ÄÄÄÄ foo AAAÄ',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'From: =?UTF-8?B?w4TDhMOEw4Q=?= <test1@example.com>\r\n' +
+                'To: =?UTF-8?Q?AAA=C3=84?= <test2@example.com>\r\n' +
+                'Subject: =?UTF-8?Q?def_=C3=84=C3=84=C3=84=C3=84_foo_AAA?=\r\n' +
+                ' =?UTF-8?Q?=C3=84?=\r\n' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'Content-Transfer-Encoding: quoted-printable\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                '\r\n' +
+                'def =C3=84=C3=84=C3=84=C3=84 foo AAA=C3=84\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should use quoted-printable text encoding', (t, done) => {
+            let data = {
+                from: 'ÄÄÄÄ test1@example.com',
+                to: 'AAAÄ test2@example.com',
+                subject: 'def ÄÄÄÄ foo AAAÄ',
+                text: 'def ÄÄÄÄ foo AAAÄ',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                textEncoding: 'quoted-printable' as const
+            };
+
+            let expected =
+                '' +
+                'From: =?UTF-8?Q?=C3=84=C3=84=C3=84=C3=84?= <test1@example.com>\r\n' +
+                'To: =?UTF-8?Q?AAA=C3=84?= <test2@example.com>\r\n' +
+                'Subject: =?UTF-8?Q?def_=C3=84=C3=84=C3=84=C3=84_foo_AAA?=\r\n' +
+                ' =?UTF-8?Q?=C3=84?=\r\n' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'Content-Transfer-Encoding: quoted-printable\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                '\r\n' +
+                'def =C3=84=C3=84=C3=84=C3=84 foo AAA=C3=84\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should use base64 text encoding', (t, done) => {
+            let data = {
+                from: 'ÄÄÄÄ test1@example.com',
+                to: 'AAAÄ test2@example.com',
+                subject: 'def ÄÄÄÄ foo AAAÄ',
+                text: 'def ÄÄÄÄ foo AAAÄ',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                textEncoding: 'base64' as const
+            };
+
+            let expected =
+                '' +
+                'From: =?UTF-8?B?w4TDhMOEw4Q=?= <test1@example.com>\r\n' +
+                'To: =?UTF-8?B?QUFBw4Q=?= <test2@example.com>\r\n' +
+                'Subject: =?UTF-8?B?ZGVmIMOEw4TDhMOEIGZvbyBBQUHDhA==?=\r\n' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                '\r\n' +
+                'ZGVmIMOEw4TDhMOEIGZvbyBBQUHDhA==\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should keep BCC', (t, done) => {
+            let data = {
+                from: 'test1@example.com',
+                to: 'test2@example.com',
+                bcc: 'test3@example.com',
+                text: 'def',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'From: test1@example.com\r\n' +
+                'To: test2@example.com\r\n' +
+                'Bcc: test3@example.com\r\n' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                '\r\n' +
+                'def\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.keepBcc = true;
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should set headers for attachment', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        headers: {
+                            'X-Test-1': 12345,
+                            'X-Test-2': 'ÕÄÖÜ',
+                            'X-Test-3': ['foo', 'bar']
+                        },
+                        content: 'test',
+                        filename: 'test.txt'
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n-' +
+                '---_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; name=test.txt\r\n' +
+                'X-Test-1: 12345\r\n' +
+                'X-Test-2: =?UTF-8?B?w5XDhMOWw5w=?=\r\n' +
+                'X-Test-3: foo\r\n' +
+                'X-Test-3: bar\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: attachment; filename=test.txt\r\n' +
+                '\r\n' +
+                'dGVzdA==\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should encode filename', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        content: 'test',
+                        filename: '"test" it is.txt'
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n-' +
+                '---_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; name="=?UTF-8?Q?=22test=22_it_is=2Etxt?="\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: attachment;\r\n' +
+                " filename*0*=utf-8''%22test%22%20it%20is.txt\r\n" +
+                '\r\n' +
+                'dGVzdA==\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should keep plaintext for attachment', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        headers: {
+                            'X-Test-1': 12345,
+                            'X-Test-2': 'ÕÄÖÜ',
+                            'X-Test-3': ['foo', 'bar']
+                        },
+                        content: 'test',
+                        filename: 'test.txt',
+                        contentTransferEncoding: false as const
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n-' +
+                '---_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; name=test.txt\r\n' +
+                'X-Test-1: 12345\r\n' +
+                'X-Test-2: =?UTF-8?B?w5XDhMOWw5w=?=\r\n' +
+                'X-Test-3: foo\r\n' +
+                'X-Test-3: bar\r\n' +
+                'Content-Disposition: attachment; filename=test.txt\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'test\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should use default transfer encoding', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        content: 'test',
+                        filename: 'test.bin'
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n-' +
+                '---_NmP-test-Part_1\r\n' +
+                'Content-Type: application/octet-stream; name=test.bin\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: attachment; filename=test.bin\r\n' +
+                '\r\n' +
+                'dGVzdA==\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should keep provided transfer encoding', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        content: 'test',
+                        filename: 'test.bin',
+                        contentTransferEncoding: '7bit'
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n-' +
+                '---_NmP-test-Part_1\r\n' +
+                'Content-Type: application/octet-stream; name=test.bin\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                'Content-Disposition: attachment; filename=test.bin\r\n' +
+                '\r\n' +
+                'test\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should use 7bit transfer encoding for an ASCII message/rfc822 attachment', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        content: 'test',
+                        filename: 'test.eml'
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n-' +
+                '---_NmP-test-Part_1\r\n' +
+                'Content-Type: message/rfc822; name=test.eml\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                'Content-Disposition: inline; filename=test.eml\r\n' +
+                '\r\n' +
+                'test\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should handle message/rfc822 attachments with non-ASCII content', (t, done) => {
+            // Simulates a forwarded email containing UTF-8 characters
+            let nestedMessage =
+                'From: sender@example.com\r\n' +
+                'To: recipient@example.com\r\n' +
+                'Subject: =?UTF-8?B?VGVzdCDDhMOWw5w=?=\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 8bit\r\n' +
+                '\r\n' +
+                'Message with non-ASCII: äöü 你好 🎉\r\n';
+
+            let data = {
+                text: 'Forwarding a message',
+                baseBoundary: 'test',
+                messageId: 'nested-msg-test',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        content: nestedMessage,
+                        contentType: 'message/rfc822',
+                        filename: 'forwarded.eml'
+                    }
+                ]
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                let msg = message.toString();
+                // Verify Content-Transfer-Encoding is 8bit for the nested message
+                assert.ok(msg.includes('Content-Type: message/rfc822; name=forwarded.eml\r\nContent-Transfer-Encoding: 8bit\r\n'));
+                // Verify the non-ASCII content is preserved (not corrupted by 7bit encoding)
+                assert.ok(msg.includes('äöü'));
+                assert.ok(msg.includes('你好'));
+                assert.ok(msg.includes('🎉'));
+                done();
+            });
+        });
+
+        describe('message/rfc822 transfer encoding', () => {
+            const encodingOf = async (attachment: { [key: string]: unknown }): Promise<string> => {
+                const message = await new MailComposer({
+                    text: 'abc',
+                    attachments: [{ contentType: 'message/rfc822', filename: 'forwarded.eml', ...attachment }]
+                })
+                    .compile()
+                    .build();
+                const match = message.toString().match(/Content-Type: message\/rfc822[^\r]*\r\nContent-Transfer-Encoding: ([^\r]+)/);
+                assert.ok(match, message.toString());
+                return match[1];
+            };
+            const ascii = 'From: sender@example.com\r\nSubject: test\r\n\r\nplain ascii body\r\n';
+
+            it('uses 7bit for ASCII string and Buffer content', async () => {
+                assert.strictEqual(await encodingOf({ content: ascii }), '7bit');
+                assert.strictEqual(await encodingOf({ content: Buffer.from(ascii) }), '7bit');
+                // a line of exactly 998 characters still fits
+                assert.strictEqual(await encodingOf({ content: ascii + 'x'.repeat(998) + '\r\n' }), '7bit');
+            });
+
+            it('uses 8bit for content 7bit can not describe', async () => {
+                assert.strictEqual(await encodingOf({ content: ascii + 'õ\r\n' }), '8bit');
+                assert.strictEqual(await encodingOf({ content: Buffer.from(ascii + 'õ\r\n') }), '8bit');
+                assert.strictEqual(await encodingOf({ content: Buffer.concat([Buffer.from(ascii), Buffer.from([0xff])]) }), '8bit');
+                assert.strictEqual(await encodingOf({ content: ascii + '\x00' }), '8bit');
+                assert.strictEqual(await encodingOf({ content: ascii + 'x'.repeat(999) }), '8bit');
+            });
+
+            it('uses 8bit for content it can not check', async () => {
+                assert.strictEqual(await encodingOf({ content: stream.Readable.from([Buffer.from(ascii)]) }), '8bit');
+                // the base64 string is ASCII, what it decodes to does not have to be
+                assert.strictEqual(await encodingOf({ content: Buffer.from(ascii).toString('base64'), encoding: 'base64' }), '8bit');
+            });
+
+            it('keeps an explicit contentTransferEncoding', async () => {
+                assert.strictEqual(await encodingOf({ content: ascii, contentTransferEncoding: '8bit' }), '8bit');
+                assert.strictEqual(await encodingOf({ content: ascii, contentTransferEncoding: 'binary' }), 'binary');
+            });
+        });
+
+        it('should ignore attachment filename', (t, done) => {
+            let data = {
+                text: 'abc',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                attachments: [
+                    {
+                        content: 'test',
+                        filename: 'test.txt'
+                    },
+                    {
+                        content: 'test2',
+                        filename: false as const
+                    }
+                ]
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'abc\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; name=test.txt\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: attachment; filename=test.txt\r\n' +
+                '\r\n' +
+                'dGVzdA==\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: application/octet-stream\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: attachment\r\n' +
+                '\r\n' +
+                'dGVzdDI=\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should add ical alternative', (t, done) => {
+            let data = {
+                from: 'test1@example.com',
+                to: 'test2@example.com',
+                bcc: 'test3@example.com',
+                text: 'def',
+                messageId: 'icaltest',
+                icalEvent: {
+                    method: 'request',
+                    content: Buffer.from('test').toString('hex'),
+                    encoding: 'hex'
+                },
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000',
+                baseBoundary: 'test'
+            };
+
+            let expected =
+                '' +
+                'From: test1@example.com\r\n' +
+                'To: test2@example.com\r\n' +
+                'Message-ID: <icaltest>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: multipart/alternative; boundary="--_NmP-test-Part_2"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                'def\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'Content-Type: text/calendar; charset=utf-8; method=REQUEST\r\n' +
+                'Content-Transfer-Encoding: quoted-printable\r\n' +
+                '\r\n' +
+                'test\r\n' +
+                '----_NmP-test-Part_2--\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: application/ics; name=invite.ics\r\n' +
+                'Content-Disposition: attachment; filename=invite.ics\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                '\r\n' +
+                'dGVzdA==\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should load icalEvent from file for both alternative and attachment parts', (t, done) => {
+            let data = {
+                text: 'def',
+                icalEvent: {
+                    path: __dirname + '/fixtures/attachment.bin'
+                }
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                let msg = message.toString();
+                let icsPart = msg.substring(msg.indexOf('Content-Type: application/ics'));
+                assert.ok(icsPart.includes('name=invite.ics'));
+                // base64 of the fixture content must be present in the attachment copy
+                assert.ok(icsPart.includes('w7VrdmEK'), 'application/ics part should not be empty');
+                done();
+            });
+        });
+
+        it('should not let an own __proto__ key of icalEvent replace the content', (t, done) => {
+            // the event is normalized on a copy, and an own "__proto__" key used to make
+            // that copy inherit a path, which the mapping then turned into the content and
+            // read off disk. An app validating the own keys of the blob sees only content
+            let data = {
+                text: 'def',
+                icalEvent: JSON.parse('{"content":"BEGIN:VCALENDAR\\r\\nEND:VCALENDAR","__proto__":{"path":"' + __dirname + '/fixtures/attachment.bin"}}')
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                let msg = message.toString();
+                assert.ok(msg.includes('BEGIN:VCALENDAR'), 'the content the caller set should be used');
+                assert.ok(!msg.includes('w7VrdmEK'), 'the inherited path should not be read');
+                done();
+            });
+        });
+
+        it('should not let an own __proto__ key of icalEvent fetch an url', (t, done) => {
+            // the href variant is SSRF that passes every URL check, because the injected
+            // URL genuinely is http
+            let data = {
+                text: 'def',
+                icalEvent: JSON.parse('{"content":"BEGIN:VCALENDAR\\r\\nEND:VCALENDAR","__proto__":{"href":"http://127.0.0.1:1/x"}}')
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.ok(message.toString().includes('BEGIN:VCALENDAR'));
+                done();
+            });
+        });
+
+        it('should load icalEvent from data uri for both alternative and attachment parts', (t, done) => {
+            let data = {
+                text: 'def',
+                icalEvent: {
+                    path: 'data:text/calendar;base64,dGVzdA=='
+                }
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                let msg = message.toString();
+                let icsPart = msg.substring(msg.indexOf('Content-Type: application/ics'));
+                assert.ok(icsPart.includes('dGVzdA=='), 'application/ics part should not be empty');
+                done();
+            });
+        });
+
+        it('should load icalEvent from an url for both alternative and attachment parts', (t, done) => {
+            let requestCount = 0;
+            let server = http.createServer((req, res) => {
+                requestCount++;
+                res.writeHead(200, { 'Content-Type': 'text/calendar' });
+                res.end('BEGIN:VCALENDAR');
+            });
+
+            server.listen(0, () => {
+                let data = {
+                    text: 'def',
+                    icalEvent: {
+                        href: 'http://localhost:' + (server.address() as AddressInfo).port + '/invite.ics'
+                    }
+                };
+
+                let mail = new MailComposer(data).compile();
+                mail.build((err, message) => {
+                    server.close(() => {
+                        assert.ok(!err);
+                        let msg = message.toString();
+                        let icsPart = msg.substring(msg.indexOf('Content-Type: application/ics'));
+                        assert.ok(icsPart.includes(Buffer.from('BEGIN:VCALENDAR').toString('base64')), 'application/ics part should not be empty');
+                        // the text/calendar alternative shares the resolved value
+                        assert.ok(msg.indexOf('Content-Type: text/calendar') >= 0);
+                        assert.strictEqual(requestCount, 1, 'the event url should be fetched only once');
+                        done();
+                    });
+                });
+            });
+        });
+
+        it('should not load icalEvent from file if disableFileAccess is set', (t, done) => {
+            let data = {
+                text: 'def',
+                icalEvent: {
+                    path: __dirname + '/fixtures/attachment.bin'
+                },
+                disableFileAccess: true
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(err);
+                assert.ok(!message);
+                done();
+            });
+        });
+
+        it('should use load attachment from file', (t, done) => {
+            let data = {
+                text: 'abc',
+                attachments: [
+                    {
+                        path: __dirname + '/fixtures/attachment.bin'
+                    }
+                ]
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.ok(message.toString().includes('w7VrdmEK'));
+                done();
+            });
+        });
+
+        it('should not load attachment from file', (t, done) => {
+            let data = {
+                text: 'abc',
+                attachments: [
+                    {
+                        path: __dirname + '/fixtures/attachment.bin'
+                    }
+                ],
+                disableFileAccess: true
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(err);
+                assert.ok(!message);
+                done();
+            });
+        });
+
+        it('should load raw message from file', (t, done) => {
+            let data = {
+                raw: {
+                    path: __dirname + '/fixtures/attachment.bin'
+                }
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                // raw content is emitted verbatim (not base64-encoded like an attachment)
+                assert.ok(message.toString().includes('õkva'));
+                done();
+            });
+        });
+
+        it('should not load raw message from file if disableFileAccess is set', (t, done) => {
+            let data = {
+                raw: {
+                    path: __dirname + '/fixtures/attachment.bin'
+                },
+                disableFileAccess: true
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(err);
+                assert.strictEqual(err.code, 'EFILEACCESS');
+                assert.ok(!message);
+                done();
+            });
+        });
+
+        it('should not load raw message from url if disableUrlAccess is set', (t, done) => {
+            let data = {
+                raw: {
+                    href: 'http://localhost:1/raw'
+                },
+                disableUrlAccess: true
+            };
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(err);
+                assert.strictEqual(err.code, 'EURLACCESS');
+                assert.ok(!message);
+                done();
+            });
+        });
+
+        it('should create an empty text node when there is no content', (t, done) => {
+            let data = {
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: text/plain\r\n' +
+                '\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should force the transfer encoding of text nodes with the encoding option', (t, done) => {
+            let data = {
+                text: 'abc',
+                html: 'def',
+                encoding: 'base64',
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/alternative; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                '\r\n' +
+                'YWJj\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/html; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                '\r\n' +
+                'ZGVm\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let mail = new MailComposer(data).compile();
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should nest the related node in the mixed node when there is no text alternative', (t, done) => {
+            let data = {
+                html: '<img src="cid:img1">',
+                attachments: [
+                    {
+                        content: 'PNGDATA',
+                        cid: 'img1',
+                        contentType: 'image/png',
+                        filename: 'a.png'
+                    },
+                    {
+                        content: 'doc',
+                        filename: 'b.txt'
+                    }
+                ],
+                baseBoundary: 'test',
+                messageId: 'zzzzzz',
+                date: 'Sat, 21 Jun 2014 10:52:44 +0000'
+            };
+
+            let expected =
+                '' +
+                'Message-ID: <zzzzzz>\r\n' +
+                'Date: Sat, 21 Jun 2014 10:52:44 +0000\r\n' +
+                'MIME-Version: 1.0\r\n' +
+                'Content-Type: multipart/mixed; boundary="--_NmP-test-Part_1"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: multipart/related; type="text/html";\r\n' +
+                ' boundary="--_NmP-test-Part_2"\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'Content-Type: text/html; charset=utf-8\r\n' +
+                'Content-Transfer-Encoding: 7bit\r\n' +
+                '\r\n' +
+                '<img src="cid:img1">\r\n' +
+                '----_NmP-test-Part_2\r\n' +
+                'Content-Type: image/png; name=a.png\r\n' +
+                'Content-ID: <img1>\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: inline; filename=a.png\r\n' +
+                '\r\n' +
+                'UE5HREFUQQ==\r\n' +
+                '----_NmP-test-Part_2--\r\n' +
+                '\r\n' +
+                '----_NmP-test-Part_1\r\n' +
+                'Content-Type: text/plain; name=b.txt\r\n' +
+                'Content-Transfer-Encoding: base64\r\n' +
+                'Content-Disposition: attachment; filename=b.txt\r\n' +
+                '\r\n' +
+                'ZG9j\r\n' +
+                '----_NmP-test-Part_1--\r\n';
+
+            let compiler = new MailComposer(data);
+            let mail = compiler.compile();
+            assert.strictEqual(compiler._useMixed, true);
+            assert.strictEqual(compiler._useRelated, true);
+            assert.strictEqual(compiler._useAlternative, false);
+
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.strictEqual(message.toString(), expected);
+                done();
+            });
+        });
+
+        it('should not mime encode the Content-ID of an embedded image', (t, done) => {
+            const cid = 'logo-\u00e4@example.com';
+            const mail = new MailComposer({
+                html: '<img src="cid:' + cid + '">',
+                attachments: [
+                    {
+                        content: 'PNGDATA',
+                        cid,
+                        contentType: 'image/png',
+                        filename: 'a.png'
+                    }
+                ]
+            }).compile();
+
+            mail.build((err, message) => {
+                assert.ok(!err);
+                assert.ok(message.toString().includes('\r\nContent-ID: <' + cid + '>\r\n'), message.toString());
+                done();
+            });
+        });
+
+        it('should map an http path of an attachment to an href', () => {
+            let compiler = new MailComposer({
+                attachments: [
+                    {
+                        path: 'http://localhost:1/dir/file.txt?x=1'
+                    }
+                ]
+            });
+
+            let attachments = compiler.getAttachments(false);
+            assert.strictEqual(attachments.attached.length, 1);
+            assert.deepStrictEqual(attachments.attached[0].content, {
+                href: 'http://localhost:1/dir/file.txt?x=1',
+                httpHeaders: undefined,
+                tls: undefined
+            });
+            // the filename comes from the url path, without the query string
+            assert.strictEqual(attachments.attached[0].filename, 'file.txt');
+            assert.strictEqual(attachments.attached[0].contentType, 'text/plain');
+            // the input is rewritten as well, so the url is never read as a file path
+            assert.strictEqual(compiler.mail.attachments![0].href, 'http://localhost:1/dir/file.txt?x=1');
+            assert.strictEqual(compiler.mail.attachments![0].path, undefined);
+        });
+
+        it('should derive the attachment filename from a Windows path', () => {
+            let compiler = new MailComposer({
+                attachments: [
+                    { path: 'C:\\Users\\alice\\docs\\report.pdf' },
+                    { path: 'C:\\Users\\alice/docs\\mixed.txt' },
+                    { path: '..\\..\\Users\\alice\\report.pdf' },
+                    { path: '\\\\server\\share\\docs\\report.pdf' },
+                    { path: 'C:\\Users\\alice\\' }
+                ]
+            });
+
+            let attachments = compiler.getAttachments(false);
+            assert.strictEqual(attachments.attached.length, 5);
+            // only the basename travels in the headers, never the sender-local path
+            assert.strictEqual(attachments.attached[0].filename, 'report.pdf');
+            assert.strictEqual(attachments.attached[0].contentType, 'application/pdf');
+            assert.strictEqual(attachments.attached[1].filename, 'mixed.txt');
+            // a relative or UNC path must not travel into the headers either
+            assert.strictEqual(attachments.attached[2].filename, 'report.pdf');
+            assert.strictEqual(attachments.attached[3].filename, 'report.pdf');
+            // a path that ends with a separator has no basename to use, so the generated name is used instead
+            // ('*' is what the extension detection gives for the octet-stream default)
+            assert.strictEqual(attachments.attached[4].filename, 'attachment-5.*');
+        });
+
+        it('should keep the request headers and tls settings of an href attachment', () => {
+            let compiler = new MailComposer({
+                attachments: [
+                    {
+                        href: 'https://localhost:1/image.png',
+                        httpHeaders: { 'x-token': 'secret' },
+                        tls: { rejectUnauthorized: false },
+                        cid: 'img1'
+                    }
+                ]
+            });
+
+            let attachments = compiler.getAttachments(true);
+            assert.strictEqual(attachments.attached.length, 0);
+            assert.deepStrictEqual(attachments.related, [
+                {
+                    contentType: 'image/png',
+                    contentDisposition: 'inline',
+                    contentTransferEncoding: 'base64',
+                    filename: 'image.png',
+                    cid: 'img1',
+                    content: {
+                        href: 'https://localhost:1/image.png',
+                        httpHeaders: { 'x-token': 'secret' },
+                        tls: { rejectUnauthorized: false }
+                    }
+                }
+            ]);
+        });
+
+        it('should keep the request headers and tls settings of an href alternative', () => {
+            let compiler = new MailComposer({
+                text: 'abc',
+                html: {
+                    href: 'https://localhost:1/page.html',
+                    httpHeaders: { 'x-token': 'secret' },
+                    tls: { rejectUnauthorized: false }
+                }
+            });
+
+            let alternatives = compiler.getAlternatives();
+            assert.strictEqual(alternatives.length, 2);
+            assert.deepStrictEqual(alternatives[1].content, {
+                href: 'https://localhost:1/page.html',
+                httpHeaders: { 'x-token': 'secret' },
+                tls: { rejectUnauthorized: false }
+            });
+        });
+
+        it('should map an http path of an alternative to an href', () => {
+            let compiler = new MailComposer({
+                text: 'abc',
+                html: {
+                    path: 'http://localhost:1/page.html'
+                },
+                alternatives: [
+                    {
+                        path: 'https://localhost:1/dir/alt.html?x=1',
+                        contentType: 'text/x-custom'
+                    }
+                ]
+            });
+
+            let alternatives = compiler.getAlternatives();
+            assert.strictEqual(alternatives.length, 3);
+            assert.deepStrictEqual(alternatives[1], {
+                contentType: 'text/html; charset=utf-8',
+                contentTransferEncoding: undefined,
+                content: {
+                    href: 'http://localhost:1/page.html',
+                    httpHeaders: undefined,
+                    tls: undefined
+                }
+            });
+            assert.deepStrictEqual(alternatives[2], {
+                contentType: 'text/x-custom',
+                contentTransferEncoding: undefined,
+                content: {
+                    href: 'https://localhost:1/dir/alt.html?x=1',
+                    httpHeaders: undefined,
+                    tls: undefined
+                }
+            });
+        });
+
+        it('should keep the filename of an alternative', (t, done) => {
+            let compiler = new MailComposer({
+                alternatives: [
+                    {
+                        filename: 'alt.txt',
+                        content: 'x'
+                    }
+                ]
+            });
+
+            assert.deepStrictEqual(compiler.getAlternatives(), [
+                {
+                    contentType: 'text/plain',
+                    contentTransferEncoding: undefined,
+                    filename: 'alt.txt',
+                    content: 'x'
+                }
+            ]);
+
+            compiler.compile().build((err, message) => {
+                assert.ok(!err);
+                let msg = message.toString();
+                assert.ok(/^Content-Type: text\/plain; name=alt.txt$/m.test(msg));
+                assert.ok(/^Content-Disposition: attachment; filename=alt.txt$/m.test(msg));
+                done();
+            });
+        });
+
+        it('should map an http path of the icalEvent to an href', () => {
+            let compiler = new MailComposer({
+                text: 'def',
+                icalEvent: {
+                    path: 'http://localhost:1/invite.ics',
+                    httpHeaders: { 'x-token': 'secret' }
+                }
+            });
+
+            let event = compiler._getIcalEvent();
+            assert.deepStrictEqual(event.content, {
+                href: 'http://localhost:1/invite.ics',
+                httpHeaders: { 'x-token': 'secret' },
+                tls: undefined,
+                _resolve: true
+            });
+            assert.strictEqual(event.path, undefined);
+            assert.strictEqual(event.href, undefined);
+            // the alternative and the attachment share the same normalized event
+            assert.strictEqual(compiler._getIcalEvent(), event);
+        });
+
+        it('should keep the tls settings of an href icalEvent', () => {
+            let compiler = new MailComposer({
+                text: 'def',
+                icalEvent: {
+                    href: 'https://localhost:1/invite.ics',
+                    httpHeaders: { 'x-token': 'secret' },
+                    tls: { rejectUnauthorized: false }
+                }
+            });
+
+            let event = compiler._getIcalEvent();
+            assert.deepStrictEqual(event.content, {
+                href: 'https://localhost:1/invite.ics',
+                httpHeaders: { 'x-token': 'secret' },
+                tls: { rejectUnauthorized: false },
+                _resolve: true
+            });
+        });
+
+        it('should fetch attachments and alternatives given as an url', (t, done) => {
+            let requests: { url: string; header: string | undefined }[] = [];
+            let server = http.createServer((req, res) => {
+                requests.push({ url: req.url as string, header: req.headers['x-test'] as string | undefined });
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end('content of ' + req.url);
+            });
+
+            server.listen(0, () => {
+                let base = 'http://localhost:' + (server.address() as AddressInfo).port;
+                let data = {
+                    text: 'abc',
+                    html: {
+                        path: base + '/page.html',
+                        httpHeaders: { 'x-test': 'html' }
+                    },
+                    attachments: [
+                        {
+                            path: base + '/file.txt',
+                            httpHeaders: { 'x-test': 'yes' }
+                        }
+                    ]
+                };
+
+                let mail = new MailComposer(data).compile();
+                mail.build((err, message) => {
+                    server.close(() => {
+                        assert.ok(!err);
+                        let msg = message.toString();
+                        assert.ok(msg.includes('\r\n\r\ncontent of /page.html\r\n'));
+                        assert.ok(msg.includes('Content-Disposition: attachment; filename=file.txt'));
+                        assert.ok(msg.includes(Buffer.from('content of /file.txt').toString('base64')));
+                        assert.deepStrictEqual(
+                            requests.sort((a, b) => a.url.localeCompare(b.url)),
+                            [
+                                { url: '/file.txt', header: 'yes' },
+                                { url: '/page.html', header: 'html' }
+                            ]
+                        );
+                        done();
+                    });
+                });
+            });
+        });
+
+        it('should return empty content for a data url over the size limit', () => {
+            // the limit is 52428800 chars of data url, the payload alone is one over it
+            let filler = 'A'.repeat(52428801);
+            let compiler = new MailComposer({
+                attachments: [
+                    {
+                        path: 'data:image/png;base64,' + filler
+                    },
+                    {
+                        href: 'data:' + 'x'.repeat(300) + ',' + filler,
+                        contentType: 'text/x-preset'
+                    }
+                ]
+            });
+
+            let attached = compiler.getAttachments(false).attached;
+            assert.strictEqual(attached.length, 2);
+
+            // the content type is still read from the data url header
+            assert.strictEqual(attached[0].contentType, 'image/png');
+            assert.strictEqual(attached[0].filename, 'attachment-1.png');
+            assert.ok(Buffer.isBuffer(attached[0].content));
+            assert.strictEqual((attached[0].content as Buffer).length, 0);
+
+            // a preset content type wins, and a header past 200 chars is not parsed at all
+            assert.strictEqual(attached[1].contentType, 'text/x-preset');
+            assert.strictEqual(attached[1].filename, 'attachment-2.txt');
+            assert.ok(Buffer.isBuffer(attached[1].content));
+            assert.strictEqual((attached[1].content as Buffer).length, 0);
+        });
+    });
+});
+
+describe('MailComposer ReDoS Protection Tests', () => {
+    describe('parseDataURI security', () => {
+        it('should handle malicious data URLs without ReDoS', () => {
+            // Test case from the vulnerability report
+            const maliciousDataUrl = 'data:;' + ';'.repeat(60000) + ',test';
+
+            const startTime = Date.now();
+            const data = {
+                attachments: [
+                    {
+                        path: maliciousDataUrl
+                    }
+                ]
+            };
+
+            const compiler = new MailComposer(data);
+            assert.doesNotThrow(() => compiler.compile());
+
+            const processingTime = Date.now() - startTime;
+            // Should complete in reasonable time (under 100ms)
+            assert.ok(processingTime < 100, `Processing took too long: ${processingTime}ms`);
+        });
+
+        it('should handle various data URL formats correctly', () => {
+            const testCases = [
+                'data:text/plain,hello%20world',
+                'data:text/html;base64,PGh0bWw+',
+                'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+                'data:application/json;charset=utf-8,{"test":true}'
+            ];
+
+            testCases.forEach(dataUrl => {
+                const data = {
+                    attachments: [{ path: dataUrl }]
+                };
+
+                const compiler = new MailComposer(data);
+                assert.doesNotThrow(() => {
+                    const mail = compiler.compile();
+                    assert.ok(mail);
+                }, `Failed to process data URL: ${dataUrl}`);
+            });
+        });
+
+        it('should reject excessively long data URLs gracefully', () => {
+            const longDataUrl = 'data:text/plain,' + 'a'.repeat(200000);
+            const data = {
+                attachments: [{ path: longDataUrl }]
+            };
+
+            const compiler = new MailComposer(data);
+            assert.doesNotThrow(() => {
+                const mail = compiler.compile();
+                assert.ok(mail);
+            });
+        });
+
+        it('should handle malformed data URLs without crashing', () => {
+            const malformedUrls = ['data:', 'data:;base64,!!!', 'data:text/plain;', 'data:invalid;base64,!@#$%'];
+
+            malformedUrls.forEach(url => {
+                const data = {
+                    attachments: [{ path: url }]
+                };
+
+                const compiler = new MailComposer(data);
+                assert.doesNotThrow(() => {
+                    const mail = compiler.compile();
+                    assert.ok(mail);
+                }, `Failed to handle malformed URL: ${url}`);
+            });
+        });
+    });
+
+    describe('getAttachments with data URLs', () => {
+        it('should process data URLs in attachments safely', () => {
+            const data = {
+                attachments: [
+                    {
+                        filename: 'test.txt',
+                        path: 'data:text/plain;base64,SGVsbG8gV29ybGQ='
+                    }
+                ]
+            };
+
+            const compiler = new MailComposer(data);
+            const attachments = compiler.getAttachments(false);
+
+            assert.strictEqual(attachments.attached.length, 1);
+            assert.ok(Buffer.isBuffer(attachments.attached[0].content));
+        });
+
+        it('should handle data URLs in alternatives safely', () => {
+            const data = {
+                html: {
+                    path: 'data:text/html,<html><body>Test</body></html>'
+                }
+            };
+
+            const compiler = new MailComposer(data);
+            const alternatives = compiler.getAlternatives();
+
+            assert.strictEqual(alternatives.length, 1);
+            assert.ok(Buffer.isBuffer(alternatives[0].content));
+        });
+    });
+
+    describe('performance with malicious inputs', () => {
+        it('should process PoC examples quickly', () => {
+            // Test cases from the vulnerability report
+            const poc1 = {
+                text: 'Hello to myself!',
+                html: '<p><b>Hello</b> to myself <img src="cid:note@example.com"/></p>',
+                attachments: [
+                    {
+                        filename: 'Embedded file',
+                        path: 'data:' + ';t'.repeat(60000)
+                    }
+                ]
+            };
+
+            const poc2 = {
+                attachDataUrls: ['http://localhost:3000/1'] as any,
+                html: '"<img;'.repeat(809) + ' c' + ' src=data:r'.repeat(1000)
+            };
+
+            const start1 = Date.now();
+            const compiler1 = new MailComposer(poc1);
+            assert.doesNotThrow(() => compiler1.compile());
+            const time1 = Date.now() - start1;
+            assert.ok(time1 < 100, `POC 1 took too long: ${time1}ms`);
+
+            const start2 = Date.now();
+            const compiler2 = new MailComposer(poc2);
+            assert.doesNotThrow(() => compiler2.compile());
+            const time2 = Date.now() - start2;
+            assert.ok(time2 < 100, `POC 2 took too long: ${time2}ms`);
+        });
+    });
+
+    describe('otp', () => {
+        const compose = (data: ConstructorParameters<typeof MailComposer>[0]): Promise<string> =>
+            new Promise((resolve, reject) => {
+                new MailComposer(data).compile().build((err, message) => (err ? reject(err) : resolve(message.toString())));
+            });
+
+        const otpLines = (raw: string): string[] =>
+            raw
+                .split('\r\n\r\n')[0]
+                .split('\r\n')
+                .filter(line => /^OTP-Token:/i.test(line));
+
+        it('should add the OTP-Token header when the composer is used without the mailer', async () => {
+            const raw = await compose({ from: 'a@example.com', text: 'Your code is 123456', otp: { code: '123456', origin: 'https://example.com/login' } });
+            assert.deepStrictEqual(otpLines(raw), ['OTP-Token: "123456"; origin="https://example.com"']);
+        });
+
+        it('should replace an OTP-Token from the custom headers', async () => {
+            const raw = await compose({
+                text: 'x',
+                headers: { 'otp-token': '"999999"; origin="https://evil.example"' },
+                otp: { code: '123456', origin: 'https://example.com' }
+            });
+            assert.deepStrictEqual(otpLines(raw), ['OTP-Token: "123456"; origin="https://example.com"']);
+        });
+
+        it('should throw EOTP from compile() for an invalid otp value', () => {
+            assert.throws(() => new MailComposer({ text: 'x', otp: { code: '123456', origin: 'http://example.com' } }).compile(), { code: 'EOTP' });
+            assert.throws(() => new MailComposer({ text: 'x', otp: { code: '', origin: 'https://example.com' } }).compile(), { code: 'EOTP' });
+        });
+    });
+});

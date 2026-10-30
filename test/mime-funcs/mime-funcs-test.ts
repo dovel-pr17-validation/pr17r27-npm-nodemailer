@@ -1,0 +1,1083 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import libmime from 'libmime';
+import child_process from 'node:child_process';
+import * as mimeFuncs from '../../src/mime-funcs/index.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+describe('Mime-Funcs Tests', { timeout: 50 * 1000 }, () => {
+    describe('#isPlainText', () => {
+        it('should detect plain text', () => {
+            assert.strictEqual(mimeFuncs.isPlainText('abc'), true);
+            assert.strictEqual(mimeFuncs.isPlainText('abc\x02'), false);
+            assert.strictEqual(mimeFuncs.isPlainText('abcõ'), false);
+        });
+        it('should return true', () => {
+            assert.strictEqual(mimeFuncs.isPlainText('az09\t\r\n~!?'), true);
+        });
+
+        it('should return false on low bits', () => {
+            assert.strictEqual(mimeFuncs.isPlainText('az09\n\x08!?'), false);
+        });
+
+        it('should not treat tabs and line breaks as plaintext in a parameter value', () => {
+            // a header parameter can not carry these, unlike a header value or a body
+            assert.strictEqual(mimeFuncs.isPlainText('az09\t!?', true), false);
+            assert.strictEqual(mimeFuncs.isPlainText('az09\r!?', true), false);
+            assert.strictEqual(mimeFuncs.isPlainText('az09\n!?', true), false);
+            assert.strictEqual(mimeFuncs.isPlainText('az09!?', true), true);
+        });
+
+        it('should not treat DEL as plaintext in a parameter value', () => {
+            // DEL is neither a token character nor qtext, so it can go neither bare nor quoted.
+            // a header value or a body can still carry it, so only the parameter variant rejects it
+            assert.strictEqual(mimeFuncs.isPlainText('az09\x7f!?', true), false);
+            assert.strictEqual(mimeFuncs.isPlainText('az09\x7f!?'), true);
+        });
+
+        it('should return false on high bits', () => {
+            assert.strictEqual(mimeFuncs.isPlainText('az09\nõ!?'), false);
+        });
+    });
+
+    describe('#hasLongerLines', () => {
+        it('should detect longer lines', () => {
+            assert.strictEqual(mimeFuncs.hasLongerLines('abc\ndef', 5), false);
+            assert.strictEqual(mimeFuncs.hasLongerLines('juf\nabcdef\nghi', 5), true);
+        });
+
+        it('should assume long lines for a string over 128kB without scanning it', () => {
+            // every line is a single character, but the size cut-off answers first
+            const str = 'a\n'.repeat(70 * 1024);
+            assert.strictEqual(mimeFuncs.hasLongerLines(str, 5), true);
+            assert.strictEqual(mimeFuncs.hasLongerLines(str.substr(0, 1000), 5), false);
+        });
+    });
+
+    describe('#encodeWord', () => {
+        it('should encode quoted-printable', () => {
+            assert.strictEqual('=?UTF-8?Q?See_on_=C3=B5hin_test?=', mimeFuncs.encodeWord('See on õhin test'));
+        });
+
+        it('should encode base64', () => {
+            assert.strictEqual('=?UTF-8?B?U2VlIG9uIMO1aGluIHRlc3Q=?=', mimeFuncs.encodeWord('See on õhin test', 'B'));
+        });
+    });
+
+    describe('#splitMimeEncodedString', () => {
+        it('should handle malformed UTF-8 continuation sequences', () => {
+            // A run of stray continuation bytes has no split point that keeps a character
+            // sequence whole, and the splitter used to walk back forever looking for one.
+            // That loop is synchronous, so a regression can only wedge the serial suite:
+            // node:test can not fire a timer to abort it and every assertion below would
+            // hang with it. Run the whole battery in a child process with a hard kill so a
+            // regression fails loudly instead.
+            const script = `
+                import assert from 'node:assert/strict';
+                import * as mimeFuncs from ${JSON.stringify(pathToFileURL(path.join(__dirname, '../../src/mime-funcs/index.ts')).href)};
+
+                const input = '=80'.repeat(60);
+                for (const maxlen of [12, 13, 14, 40, 41]) {
+                    const parts = mimeFuncs.splitMimeEncodedString(input, maxlen);
+                    assert.strictEqual(parts.join(''), input, 'parts do not reassemble into the input');
+                    assert.ok(parts.length, 'no parts emitted');
+                    for (const part of parts) {
+                        // a part ending in a bare '=' or a half written escape corrupts the
+                        // byte and is not a decodable encoded word
+                        assert.ok(!/[=][0-9A-F]?$/i.test(part), 'part ' + JSON.stringify(part) + ' ends inside an escape');
+                    }
+                }
+
+                // encodeWord is the production caller and subtracts the encoded word
+                // overhead from maxlen, so the chunk size it asks for is not a multiple of 3
+                for (const word of mimeFuncs.encodeWord(Buffer.alloc(60, 0x80), 'Q', 52).split(' ')) {
+                    assert.ok(/^=\\?UTF-8\\?Q\\?(?:[^=]|=[0-9A-F]{2})*\\?=$/i.test(word), 'invalid encoded word ' + JSON.stringify(word));
+                }
+            `;
+            // Bun runs TypeScript natively, so the tsx loader is only registered under Node
+            const loaderArgs = process.versions.bun ? [] : ['--import', 'tsx'];
+            const res = child_process.spawnSync(process.execPath, [...loaderArgs, '--input-type=module', '-e', script], {
+                timeout: 30 * 1000,
+                encoding: 'utf8'
+            });
+
+            assert.strictEqual(res.signal, null, 'splitMimeEncodedString did not terminate');
+            assert.strictEqual(res.status, 0, res.stderr);
+        });
+    });
+
+    describe('#encodeWords', () => {
+        it('should encode Ascii range', () => {
+            const input1 = 'метель" вьюга',
+                input2 = "метель'вьюга",
+                input3 = 'Verão você vai adorar!',
+                output1 = '=?UTF-8?Q?=D0=BC=D0=B5=D1=82=D0=B5=D0=BB=D1=8C=22_?= =?UTF-8?Q?=D0=B2=D1=8C=D1=8E=D0=B3=D0=B0?=',
+                output2 = '=?UTF-8?Q?=D0=BC=D0=B5=D1=82=D0=B5=D0=BB=D1=8C=27?= =?UTF-8?Q?=D0=B2=D1=8C=D1=8E=D0=B3=D0=B0?=',
+                output3 = '=?UTF-8?Q?Ver=C3=A3o_voc=C3=AA?= vai adorar!',
+                output4 = '=?UTF-8?Q?Ver=C3=A3o_voc=C3=AA_vai_adorar!?=';
+
+            assert.strictEqual(mimeFuncs.encodeWords(input1, 'Q', 52), output1);
+            assert.strictEqual(mimeFuncs.encodeWords(input2, 'Q', 52), output2);
+            assert.strictEqual(mimeFuncs.encodeWords(input3, 'Q', 52), output3);
+            assert.strictEqual(mimeFuncs.encodeWords(input3, 'Q', 52, true), output4);
+        });
+
+        it('should keep the whitespace that separates an encoded word from the text before it', () => {
+            // U+00A0 needs encoding and is whitespace at the same time, the word scan used to
+            // pull the space before it into the encoded word and glue that word to 'ab'
+            const encoded = mimeFuncs.encodeWords('ab  cd', 'Q');
+
+            assert.strictEqual(encoded, 'ab =?UTF-8?Q?=C2=A0cd?=');
+            assert.strictEqual(libmime.decodeWords(encoded), 'ab  cd');
+        });
+
+        it('should find the words to encode in linear time', () => {
+            // the regex that found the last word to encode backtracked over the whole word
+            // from every position in it, 40k characters took close to two seconds
+            const value = 'é'.repeat(100000) + ' é';
+            const started = Date.now();
+
+            const encoded = mimeFuncs.encodeWords(value, 'Q', 0, false);
+
+            assert.ok(Date.now() - started < 1000, 'took ' + (Date.now() - started) + ' ms');
+            assert.strictEqual(libmime.decodeWords(encoded), value);
+        });
+
+        it('should split QP on maxLength', () => {
+            const inputStr = 'Jõgeva Jõgeva Jõgeva mugeva Jõgeva Jõgeva Jõgeva Jõgeva Jõgeva',
+                outputStr =
+                    '=?UTF-8?Q?J=C3=B5geva_?= =?UTF-8?Q?J=C3=B5geva_?= =?UTF-8?Q?J=C3=B5geva_?= =?UTF-8?Q?mugeva_J?= =?UTF-8?Q?=C3=B5geva_J?= =?UTF-8?Q?=C3=B5geva_J?= =?UTF-8?Q?=C3=B5geva_J?= =?UTF-8?Q?=C3=B5geva_J?= =?UTF-8?Q?=C3=B5geva?=',
+                encoded = mimeFuncs.encodeWords(inputStr, 'Q', 16);
+
+            assert.strictEqual(outputStr, encoded);
+            assert.strictEqual(inputStr, libmime.decodeWords(encoded));
+        });
+
+        it('should split base64 on maxLength', () => {
+            const inputStr = 'õõõõõ õõõõõ õõõõõ mugeva õõõõõ õõõõõ õõõõõ õõõõõ Jõgeva',
+                outputStr =
+                    '=?UTF-8?B?w7XDtcO1w7XDtSA=?= =?UTF-8?B?w7XDtcO1w7XDtSA=?= =?UTF-8?B?w7XDtcO1w7XDtSBt?= =?UTF-8?B?dWdldmEgw7XDtcO1?= =?UTF-8?B?w7XDtSDDtcO1w7U=?= =?UTF-8?B?w7XDtSDDtcO1w7U=?= =?UTF-8?B?w7XDtSDDtcO1w7U=?= =?UTF-8?B?w7XDtSBKw7VnZXZh?=',
+                encoded = mimeFuncs.encodeWords(inputStr, 'B', 30);
+
+            assert.strictEqual(outputStr, encoded);
+            assert.strictEqual(inputStr, libmime.decodeWords(encoded));
+        });
+
+        it('should not split a non-emoji surrogate pair when chunking base64', () => {
+            // U+20000 (CJK Extension B) uses a high surrogate outside the emoji range
+            const inputStr = '一' + '\u{20000}'.repeat(7),
+                encoded = mimeFuncs.encodeWord(inputStr, 'B', 52);
+
+            assert.strictEqual(inputStr, libmime.decodeWords(encoded));
+        });
+
+        it('should not let an unpaired surrogate consume the next character', () => {
+            // the lone leading surrogate is lost either way, but it must not swallow the leading
+            // half of the valid pair behind it and take that down with it
+            const inputStr = '\ud800' + '\u{20000}'.repeat(4),
+                encoded = mimeFuncs.encodeWord(inputStr, 'B', 20);
+
+            assert.strictEqual('�' + '\u{20000}'.repeat(4), libmime.decodeWords(encoded));
+        });
+
+        it('should not double encode a Buffer when chunking base64', () => {
+            // a Buffer used to go into the chunking loop as the base64 of the whole
+            // input, so every part was encoded twice and decoded back to base64 text
+            const inputStr = 'Hello wörld, this is a longer filename with ünicode.txt',
+                encoded = mimeFuncs.encodeWord(Buffer.from(inputStr), 'B', 30);
+
+            assert.strictEqual(inputStr, libmime.decodeWords(encoded));
+        });
+
+        it('should encode a UTF-8 Buffer exactly like the same string', () => {
+            // the encoding is declared as UTF-8 either way, so the two inputs describe the
+            // same text and must not diverge once the value is long enough to be chunked
+            const samples = ['Hello wörld, this is a longer filename with ünicode.txt', 'plain ascii only', '\u{1F46E}'.repeat(10), 'ä'];
+
+            samples.forEach(sample => {
+                [0, 12, 20, 30, 52, 200].forEach(maxLength => {
+                    assert.strictEqual(
+                        mimeFuncs.encodeWord(Buffer.from(sample, 'utf-8'), 'B', maxLength),
+                        mimeFuncs.encodeWord(sample, 'B', maxLength),
+                        `Buffer and string differ for ${JSON.stringify(sample.slice(0, 12))} at maxLength ${maxLength}`
+                    );
+                    assert.strictEqual(libmime.decodeWords(mimeFuncs.encodeWord(Buffer.from(sample, 'utf-8'), 'B', maxLength)), sample);
+                });
+            });
+        });
+    });
+
+    describe('#buildHeaderParam', () => {
+        it('should encode a value that looks like an encoded word', () => {
+            assert.deepStrictEqual(mimeFuncs.buildHeaderParam('filename', 'a=?b', 50), [{ key: 'filename*0*', value: "utf-8''a%3D%3Fb" }]);
+        });
+
+        it('should return unmodified', () => {
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'title',
+                        value: 'this is just a title'
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('title', 'this is just a title', 500)
+            );
+        });
+
+        it('should keep the remainder of a split ascii value', () => {
+            // 22 characters at 5 per part leave a partial last part
+            assert.deepStrictEqual(mimeFuncs.buildHeaderParam('title', 'this is just a title!!', 5), [
+                {
+                    key: 'title*0',
+                    value: 'this '
+                },
+                {
+                    key: 'title*1',
+                    value: 'is ju'
+                },
+                {
+                    key: 'title*2',
+                    value: 'st a '
+                },
+                {
+                    key: 'title*3',
+                    value: 'title'
+                },
+                {
+                    key: 'title*4',
+                    value: '!!'
+                }
+            ]);
+        });
+
+        it('should encode and split ascii', () => {
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'title*0',
+                        value: 'this '
+                    },
+                    {
+                        key: 'title*1',
+                        value: 'is ju'
+                    },
+                    {
+                        key: 'title*2',
+                        value: 'st a '
+                    },
+                    {
+                        key: 'title*3',
+                        value: 'title'
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('title', 'this is just a title', 5)
+            );
+        });
+
+        it('should encode double byte unicode characters', () => {
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'title*0*',
+                        value: "utf-8''Unicode%20title%20%F0%9F%98%8A"
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('title', 'Unicode title 😊', 50)
+            );
+        });
+
+        it('should percent encode an unpaired surrogate instead of passing it through raw', () => {
+            // encodeURIComponent throws on an unpaired surrogate. the fallback used to return the
+            // value with only the safe characters stripped out, leaving ; and = raw in a parameter
+            // value that is emitted unquoted, so the filename could inject a parameter of its own
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'filename*0*',
+                        value: "utf-8''a%EF%BF%BD%3Bfilename%EF%BF%BD%3Devil.exe"
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('filename', 'a\ud800;filename\ud800=evil.exe', 100)
+            );
+        });
+
+        it('should not let an unpaired surrogate consume a valid pair behind it', () => {
+            // the lone leading surrogate becomes U+FFFD, the astral character after it must survive
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'filename*0*',
+                        value: "utf-8''%EF%BF%BD%F0%A0%80%80"
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('filename', '\ud800\u{20000}', 50)
+            );
+        });
+
+        it('should star the continuation key of a line restarted for an encoded char', () => {
+            // when the encoded char does not fit, the plain line is pushed and a new one starts
+            // holding that char. the new line used to keep the old unencoded flag, so it got an
+            // unstarred key and a receiver read the percent escapes back as literal text
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'filename*0*',
+                        value: "utf-8''xxxxxxxxxxxx"
+                    },
+                    {
+                        key: 'filename*1',
+                        value: 'xxxxxxxxxxxxxx'
+                    },
+                    {
+                        key: 'filename*2*',
+                        value: '%C3%BC'
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('filename', 'x'.repeat(26) + 'ü', 20)
+            );
+        });
+
+        it('should encode and split unicode', () => {
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'title*0*',
+                        value: "utf-8''this%20is%20"
+                    },
+                    {
+                        key: 'title*1',
+                        value: 'just a title '
+                    },
+                    {
+                        key: 'title*2*',
+                        value: '%C3%B5%C3%A4%C3%B6'
+                    },
+                    {
+                        key: 'title*3*',
+                        value: '%C3%BC'
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('title', 'this is just a title õäöü', 20)
+            );
+        });
+
+        it('should encode and split filename with dashes', () => {
+            assert.deepStrictEqual(
+                [
+                    {
+                        key: 'filename*0*',
+                        value: "utf-8''%C6%94------%C6%94------%C6%94------%C6%94"
+                    },
+                    {
+                        key: 'filename*1*',
+                        value: '------%C6%94------%C6%94------%C6%94------.pdf'
+                    }
+                ],
+                mimeFuncs.buildHeaderParam('filename', 'Ɣ------Ɣ------Ɣ------Ɣ------Ɣ------Ɣ------Ɣ------.pdf', 50)
+            );
+        });
+
+        it('should encode and decode', () => {
+            const input =
+                'Lorěm ipsum doloř siť amet, háš peřpetua compřéhenšam at, ei nám modó soleát éxpétěndá! Boňorum vocibůs dignisšim pro ad, ea sensibus efficiendi intellegam ius. Ad nam aperiam delicata voluptaria, vix nobis luptatum ea, ců úsú graeco viďiššě ňusqúam. ';
+            const headerLine =
+                'content-disposition: attachment; ' +
+                mimeFuncs
+                    .buildHeaderParam('filename', input, 50)
+                    .map(item => item.key + '="' + item.value + '"')
+                    .join('; ');
+            const parsedHeader = mimeFuncs.parseHeaderValue(headerLine);
+            assert.strictEqual(input, libmime.decodeWords(parsedHeader.params.filename));
+        });
+    });
+
+    describe('#parseHeaderValue', () => {
+        const stripped = (str: string) => mimeFuncs.parseHeaderValue(str, { stripComments: true });
+
+        it('should drop a __proto__ parameter instead of reaching the prototype chain', () => {
+            // an rfc2231 continuation named __proto__ used to read back as Object.prototype,
+            // skip the initializer and throw on the write that followed. Any caller supplied
+            // contentType or contentDisposition reaches this parser
+            for (const str of ['text/plain; __proto__*0*=y', 'text/plain; __proto__=y', 'text/plain; __proto__*=y; charset=utf-8']) {
+                const parsed = mimeFuncs.parseHeaderValue(str);
+
+                assert.strictEqual(parsed.value, 'text/plain');
+                assert.strictEqual(Object.getPrototypeOf(parsed.params), Object.prototype);
+                assert.ok(!Object.keys(parsed.params).includes('__proto__'));
+                assert.strictEqual(({} as any).values, undefined);
+            }
+        });
+
+        it('should handle default value only', () => {
+            const str = 'text/plain',
+                obj = {
+                    value: 'text/plain',
+                    params: {}
+                };
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue(str), obj);
+        });
+
+        it('should handle unquoted params', () => {
+            const str = 'text/plain; CHARSET= UTF-8; format=flowed;',
+                obj = {
+                    value: 'text/plain',
+                    params: {
+                        charset: 'UTF-8',
+                        format: 'flowed'
+                    }
+                };
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue(str), obj);
+        });
+
+        it('should handle quoted params', () => {
+            const str = 'text/plain; filename= ";;;\\""; format=flowed;',
+                obj = {
+                    value: 'text/plain',
+                    params: {
+                        filename: ';;;"',
+                        format: 'flowed'
+                    }
+                };
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue(str), obj);
+        });
+
+        it('should handle multi line values', () => {
+            const str =
+                    'text/plain; single_encoded*="UTF-8\'\'%C3%95%C3%84%C3%96%C3%9C";\n' +
+                    " multi_encoded*0*=UTF-8''%C3%96%C3%9C;\n" +
+                    ' multi_encoded*1*=%C3%95%C3%84;\n' +
+                    ' no_charset*0=OA;\n' +
+                    ' no_charset*1=OU;\n' +
+                    " invalid*=utf-8'' _?'=%ab",
+                obj = {
+                    value: 'text/plain',
+                    params: {
+                        single_encoded: '=?UTF-8?Q?=C3=95=C3=84=C3=96=C3=9C?=',
+                        multi_encoded: '=?UTF-8?Q?=C3=96=C3=9C=C3=95=C3=84?=',
+                        no_charset: 'OAOU',
+                        invalid: "=?utf-8?Q?_=5f=3f'=3d=ab?="
+                    }
+                };
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue(str), obj);
+        });
+
+        it('should handle params only', () => {
+            const str = '; CHARSET= UTF-8; format=flowed;',
+                obj = {
+                    value: '',
+                    params: {
+                        charset: 'UTF-8',
+                        format: 'flowed'
+                    }
+                };
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue(str), obj);
+        });
+
+        it('should keep a trailing parameter that has no value', () => {
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('text/plain; charset'), {
+                value: 'text/plain',
+                params: {
+                    charset: ''
+                }
+            });
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('text/plain; charset=utf-8; FLOWED'), {
+                value: 'text/plain',
+                params: {
+                    charset: 'utf-8',
+                    flowed: ''
+                }
+            });
+        });
+
+        it('should drop a parameter that has no name', () => {
+            // a parameter name is a token and a token is never empty, so carrying the
+            // nameless one along would declare it in the rebuilt header as a bare '=v'
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('text/plain; =v; charset=utf-8'), {
+                value: 'text/plain',
+                params: {
+                    charset: 'utf-8'
+                }
+            });
+        });
+
+        it('should keep a parameter that has no value from swallowing the next one', () => {
+            // the parameter name used to keep growing across the ';' that ended it, so the
+            // name took the next parameter along and the value the header asked for was gone:
+            // a multipart content type lost its boundary to a parameter named 'flag; boundary'
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('multipart/mixed; flag; boundary="AAA"'), {
+                value: 'multipart/mixed',
+                params: {
+                    flag: '',
+                    boundary: 'AAA'
+                }
+            });
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('text/plain; a; b; charset=utf-8'), {
+                value: 'text/plain',
+                params: {
+                    a: '',
+                    b: '',
+                    charset: 'utf-8'
+                }
+            });
+        });
+
+        it('should treat a backslash outside a quoted string as an ordinary character', () => {
+            // only a quoted-string has quoted-pairs in it, so eating the backslash anywhere
+            // else turned the value 'C:\\Users\\me\\report.txt' into 'C:Usersmereport.txt'
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('attachment; filename=C:\\Users\\me\\report.txt'), {
+                value: 'attachment',
+                params: {
+                    filename: 'C:\\Users\\me\\report.txt'
+                }
+            });
+
+            // inside the quotes it still escapes, including the backslash itself
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('attachment; filename="a\\"b\\\\c"'), {
+                value: 'attachment',
+                params: {
+                    filename: 'a"b\\c'
+                }
+            });
+        });
+
+        it('should drop the junk behind a closed quoted string', () => {
+            // rfc2045 says a parameter value is a token or a quoted-string and not both, and
+            // appending the junk made a declared boundary that no delimiter in the message met
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('multipart/mixed; boundary="AAA" (unterminated comment'), {
+                value: 'multipart/mixed',
+                params: {
+                    boundary: 'AAA'
+                }
+            });
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('attachment; filename="a.txt" junk; x=1'), {
+                value: 'attachment',
+                params: {
+                    filename: 'a.txt',
+                    x: '1'
+                }
+            });
+        });
+
+        it('should not let the junk behind a closed quoted string reopen the quoting', () => {
+            // the junk was dropped by a test at the foot of the branches, so each branch above
+            // it was a way around it. A second '"' reopened quoting, which both carried the
+            // whitespace in front of it into the value and took the ';' that ends the
+            // parameter along, so the rest of the header was swallowed
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('multipart/mixed; boundary="AAA" "; boundary=BBB"'), {
+                value: 'multipart/mixed',
+                params: {
+                    boundary: 'AAA'
+                }
+            });
+
+            // no whitespace may leak in either, the value ended with the quote that closed it
+            for (const str of ['multipart/mixed; boundary="AAA" "junk"', 'multipart/mixed; boundary="AAA" "BBB"']) {
+                assert.strictEqual(mimeFuncs.parseHeaderValue(str).params.boundary, 'AAA', str);
+            }
+
+            // and the escape branch is no way in either
+            assert.strictEqual(mimeFuncs.parseHeaderValue('multipart/mixed; x="1" "\\j\\u\\n\\k"').params.x, '1');
+        });
+
+        it('should keep a continuation from overriding the plain parameter of the same name', () => {
+            // the join writes the key it builds, which is the one write in the function that
+            // could take a name another parameter already holds. Both orders resolve to the
+            // plain parameter, so the reading does not come down to which spelling came first
+            for (const str of ['attachment; filename="plain"; filename*0="cont"', 'attachment; filename*0="cont"; filename="plain"']) {
+                assert.deepStrictEqual(
+                    mimeFuncs.parseHeaderValue(str),
+                    {
+                        value: 'attachment',
+                        params: {
+                            filename: 'plain'
+                        }
+                    },
+                    str
+                );
+            }
+        });
+
+        it('should keep the whitespace a quoted parameter value carries', () => {
+            // the stored value used to be trimmed, which lost the trailing space of a
+            // continuation section that the next section is appended to
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('attachment; filename*0="Annual Report "; filename*1="2024.pdf"'), {
+                value: 'attachment',
+                params: {
+                    filename: 'Annual Report 2024.pdf'
+                }
+            });
+
+            // whitespace outside the quotes is still padding and comes off
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('attachment;  filename =  " x " ; y = 1 '), {
+                value: 'attachment',
+                params: {
+                    filename: ' x ',
+                    y: '1'
+                }
+            });
+        });
+
+        it('should keep comments by default and drop them with stripComments', () => {
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('multipart/mixed; boundary=b (comment)').params, { boundary: 'b (comment)' });
+            // read as content the comment named a boundary no delimiter line matches, so the
+            // parts stayed hidden from a receiver that reads the boundary b
+            assert.deepStrictEqual(stripped('multipart/mixed; boundary=b (comment)'), { value: 'multipart/mixed', params: { boundary: 'b' } });
+            assert.deepStrictEqual(stripped('(c) text/plain (c); (c) charset= (c)utf-8 (a (nested) c)'), {
+                value: 'text/plain',
+                params: { charset: 'utf-8' }
+            });
+            // a comment stands for whitespace, so it does not join the tokens around it
+            assert.deepStrictEqual(stripped('text/plain; x=a (c)b').params, { x: 'a b' });
+            // an escaped parenthesis does not close the comment
+            assert.deepStrictEqual(stripped('text/plain; charset=utf-8 (a \\) b); format=flowed').params, { charset: 'utf-8', format: 'flowed' });
+            // the type and a parameter name take no parenthesis, behind a closed quoted string it is junk
+            assert.deepStrictEqual(stripped('multipart(c)/mixed; boundary(c)=b'), { value: 'multipart/mixed', params: { boundary: 'b' } });
+            assert.deepStrictEqual(stripped('multipart/mixed; boundary="b"(c)').params, { boundary: 'b' });
+        });
+
+        it('should keep a parenthesis that continues a token with stripComments', () => {
+            // right behind the '=' or a token character, as Python and postal-mime read it
+            assert.deepStrictEqual(stripped('attachment; filename=Invoice(1).pdf').params, { filename: 'Invoice(1).pdf' });
+            assert.deepStrictEqual(stripped('multipart/mixed; boundary=(c)b').params, { boundary: '(c)b' });
+            assert.deepStrictEqual(stripped('multipart/mixed; boundary=(c)"b"').params, { boundary: '(c)b' });
+            assert.deepStrictEqual(stripped('multipart/mixed; boundary= (c)b').params, { boundary: 'b' });
+            // inside a quoted string it is content
+            assert.deepStrictEqual(stripped('attachment; filename="a (1).pdf" (c)').params, { filename: 'a (1).pdf' });
+            // a comment that nothing follows runs to the end of the value, one that a
+            // parameter follows is content and so is every parenthesis after it, so the
+            // parameter survives
+            assert.deepStrictEqual(stripped('multipart/mixed; boundary=b (c').params, { boundary: 'b' });
+            assert.deepStrictEqual(stripped('text/plain; x=a (b; boundary=c (d').params, { x: 'a (b', boundary: 'c (d' });
+        });
+
+        it('should drop comments in linear time', () => {
+            // a closed comment is skipped whole and an unclosed one ends the search, so a value
+            // of a hundred thousand parentheses costs a single pass, not one per parenthesis
+            const start = Date.now();
+            assert.deepStrictEqual(stripped('text/plain; x= ' + '('.repeat(100000)).params, { x: '' });
+            assert.deepStrictEqual(stripped('text/plain; x= ' + '('.repeat(100000) + ')'.repeat(100000) + 'y').params, { x: 'y' });
+            assert.deepStrictEqual(stripped('text/plain; x= ' + '(a) '.repeat(100000) + 'y').params, { x: 'y' });
+            assert.deepStrictEqual(stripped('text/plain; x= ' + '(a '.repeat(100000) + ')').params, { x: '' });
+            assert.deepStrictEqual(stripped('text/plain; x= ' + '( '.repeat(100000) + '; y=1').params, { x: '( '.repeat(100000).trim(), y: '1' });
+            assert.ok(Date.now() - start < 2000);
+        });
+
+        it('should resolve a duplicated parameter to its first occurrence', () => {
+            // the same way a duplicated header resolves. Taking the last one disagrees with
+            // the receivers that take the first, and the two readings of a duplicated
+            // boundary name different delimiters
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('multipart/mixed; boundary="b1"; boundary="b2"'), {
+                value: 'multipart/mixed',
+                params: {
+                    boundary: 'b1'
+                }
+            });
+
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('text/plain; charset=utf-8; CHARSET=us-ascii'), {
+                value: 'text/plain',
+                params: {
+                    charset: 'utf-8'
+                }
+            });
+        });
+
+        it('should not percent decode a continuation section that is not encoded', () => {
+            // rfc2231 section 4.1: only a section whose name ends in '*' is percent encoded.
+            // The charset of section 0 used to turn the escapes of every section into the
+            // bytes they spell, so a literal '%2F..%2F' was emitted as a filename the
+            // receiving client reads back as a real '/../'
+            const parsed = mimeFuncs.parseHeaderValue("attachment; filename*0*=utf-8''safe; filename*1=%2F..%2Fetc");
+
+            assert.strictEqual(parsed.params.filename, '=?utf-8?Q?safe=252F..=252Fetc?=');
+            assert.strictEqual(libmime.decodeWords(parsed.params.filename), 'safe%2F..%2Fetc');
+
+            // the same escapes in an encoded section still carry the bytes of the value
+            const encoded = mimeFuncs.parseHeaderValue("attachment; filename*0*=utf-8''safe; filename*1*=%2F..%2Fetc");
+
+            assert.strictEqual(libmime.decodeWords(encoded.params.filename), 'safe/../etc');
+        });
+
+        it('should order the continuation sections without allocating up to the section number', () => {
+            // the sections used to be written into an array at their own section number, so
+            // the array became as long as the number the header asked for and the join that
+            // followed walked all of it: the 55 byte value below held a core for over two
+            // minutes. The budget is far above the cost of the two sections it really has
+            const started = Date.now();
+            const parsed = mimeFuncs.parseHeaderValue("attachment; filename*0*=utf-8''a; filename*4000000000=b");
+            const elapsed = Date.now() - started;
+
+            assert.strictEqual(parsed.params.filename, '=?utf-8?Q?ab?=');
+            assert.ok(elapsed < 5000, `joining a continuation with section number 4e9 took ${elapsed}ms`);
+        });
+
+        it('should read a continuation charset that is not a token as unnamed', () => {
+            // the charset goes into the encoded word the value becomes, and the whitespace
+            // only used to come off it because the value was trimmed before it was read. A
+            // charset is a token, so anything else reads as the unnamed case
+            for (const str of ["attachment; filename*=\r\n''x", "attachment; filename*=utf 8''x", "attachment; filename*=win(dows)''x"]) {
+                assert.strictEqual(mimeFuncs.parseHeaderValue(str).params.filename, '=?iso-8859-1?Q?x?=', str);
+            }
+
+            // a charset that is a token is still read as the one it names
+            assert.strictEqual(mimeFuncs.parseHeaderValue("attachment; filename*=iso-8859-15''x").params.filename, '=?iso-8859-15?Q?x?=');
+        });
+
+        it('should order the continuation sections by their number', () => {
+            assert.deepStrictEqual(mimeFuncs.parseHeaderValue('attachment; filename*2=c; filename*0=a; filename*1=b'), {
+                value: 'attachment',
+                params: {
+                    filename: 'abc'
+                }
+            });
+        });
+    });
+
+    describe('#_buildHeaderValue', () => {
+        it('should encode a parameter value that looks like an encoded word', () => {
+            let built = mimeFuncs.buildHeaderValue({ value: 'attachment', params: { filename: '=?utf-8?Q?evil?=.txt' } });
+            assert.strictEqual(built, "attachment; filename*0*=utf-8''%3D%3Futf-8%3FQ%3Fevil%3F%3D.txt");
+            assert.deepStrictEqual(libmime.parseHeaderValue(built).params, { filename: '=?utf-8?Q?evil?=.txt' });
+
+            // a long one is split into continuations, unencoded ones were decoded back as an encoded word
+            const filename = '=?utf-8?Q?' + 'a'.repeat(80) + '?=.txt';
+            built = mimeFuncs.buildHeaderValue({ value: 'attachment', params: { filename } });
+            assert.deepStrictEqual(libmime.parseHeaderValue(built).params, { filename });
+        });
+
+        it('should quote a parameter that has no value', () => {
+            // a parameter value is a token or a quoted-string and a token is never empty, so
+            // the bare 'flag=' it used to emit parses as neither
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'multipart/mixed',
+                    params: {
+                        flag: '',
+                        boundary: 'AAA'
+                    }
+                }),
+                'multipart/mixed; flag=""; boundary=AAA'
+            );
+        });
+
+        it('should build header value', () => {
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test'
+                }),
+                'test'
+            );
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: 'b'
+                    }
+                }),
+                'test; a=b'
+            );
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: ';'
+                    }
+                }),
+                'test; a=";"'
+            );
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: ';"'
+                    }
+                }),
+                "test; a*0*=utf-8''%3B%22"
+            );
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: 'x\ty'
+                    }
+                }),
+                "test; a*0*=utf-8''x%09y"
+            );
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: 'x\r\ny'
+                    }
+                }),
+                "test; a*0*=utf-8''x%0D%0Ay"
+            );
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: 'b',
+                        c: 'd'
+                    }
+                }),
+                'test; a=b; c=d'
+            );
+        });
+
+        it('should strip control chars from the value token', () => {
+            // the part ahead of the parameters is a token, there is no quoting construct
+            // around it that a control char could be escaped into
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'text/a\x01b\x7fc',
+                    params: {
+                        charset: 'utf-8'
+                    }
+                }),
+                'text/abc; charset=utf-8'
+            );
+        });
+
+        it('should strip control chars from a parameter name', () => {
+            // the name is a token as well and it is emitted without any quoting around it
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'text/plain',
+                    params: {
+                        'ab\x01c\x7fd': '1'
+                    }
+                }),
+                'text/plain; abcd=1'
+            );
+            // a line break in a name used to end the header and start a new one
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'text/plain',
+                    params: {
+                        'a\r\nX-Injected: y': '1'
+                    }
+                }),
+                'text/plain; aX-Injected: y=1'
+            );
+        });
+
+        it('should handle unicode filename', () => {
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: 'b',
+                        filename: '😁😂 *\'%()<>@,;:\\"[]?=😃😄zzz😊õäöü😓.pdf'
+                    }
+                }),
+                "test; a=b; filename*0*=utf-8''%F0%9F%98%81%F0%9F%98%82%20%2A%27%25%28%29; filename*1*=%3C%3E%40%2C%3B%3A%5C%22%5B%5D%3F%3D%F0%9F%98%83; filename*2*=%F0%9F%98%84zzz%F0%9F%98%8A%C3%B5%C3%A4%C3%B6; filename*3*=%C3%BC%F0%9F%98%93.pdf"
+            );
+        });
+
+        it('should handle dashed filename', () => {
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        filename: 'Ɣ------Ɣ------Ɣ------Ɣ------Ɣ------Ɣ------Ɣ------.pdf'
+                    }
+                }),
+                "test; filename*0*=utf-8''%C6%94------%C6%94------%C6%94------%C6%94; filename*1*=------%C6%94------%C6%94------%C6%94------.pdf"
+            );
+        });
+
+        it('should split emoji filename', () => {
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        a: 'b',
+                        filename: 'Jõge-vaŽJõge-vaŽJõge-vaŽ.pdf'
+                    }
+                }),
+                "test; a=b; filename*0*=utf-8''J%C3%B5ge-va%C5%BDJ%C3%B5ge-va%C5%BDJ; filename*1*=%C3%B5ge-va%C5%BD.pdf"
+            );
+        });
+
+        it('should quote filename with spaces', () => {
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        filename: 'document a.pdf'
+                    }
+                }),
+                'test; filename="document a.pdf"'
+            );
+        });
+
+        it('should quote the continuation parts of a long plain ascii value', () => {
+            // 75 chars or more go through the rfc2231 continuation split even when ascii, and
+            // an unencoded part that holds a space still needs quotes to stay one parameter
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'attachment',
+                    params: {
+                        filename: 'a long file name with spaces in it that goes on and on and on and on and on.txt'
+                    }
+                }),
+                'attachment; filename*0="a long file name with spaces in it that goes on an"; filename*1="d on and on and on and on.txt"'
+            );
+        });
+
+        // For exhaustive list of special characters
+        // Refer: https://www.w3.org/Protocols/rfc1341/4_Content-Type.html
+        it('should quote filename with special characters', () => {
+            // The case of browser downloads when we download multiple files with same name.
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        filename: 'receipt(3).pdf'
+                    }
+                }),
+                'test; filename="receipt(3).pdf"'
+            );
+
+            // For headers which are comma separated as in case of multiple from members elements.
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        filename: 'jack,jill.pdf'
+                    }
+                }),
+                'test; filename="jack,jill.pdf"'
+            );
+
+            // Added support for some more special characters
+            const correctString = [
+                'space="x y"',
+                'small_bracket_open="x(y"',
+                'small_bracket_close="x)y"',
+                'angle_bracket_open="x<y"',
+                'angle_bracket_close="x>y"',
+                'at_the_rate="x@y"',
+                'semicolon="x;y"',
+                'colon="x:y"',
+                'back_slash="x\\\\y"',
+                'single_quote="x\'y"',
+                "double_quotes*0*=utf-8''x%22y",
+                'forward_slash="x/y"',
+                'big_bracket_open="x[y"',
+                'big_bracket_close="x]y"',
+                'question_mark="x?y"',
+                'comma="x,y"',
+                'equals="x=y"',
+                'negative_in_mid=x-y',
+                'negative_in_start="-x"'
+            ].join('; ');
+
+            assert.strictEqual(
+                mimeFuncs.buildHeaderValue({
+                    value: 'test',
+                    params: {
+                        space: 'x y',
+                        small_bracket_open: 'x(y',
+                        small_bracket_close: 'x)y',
+                        angle_bracket_open: 'x<y',
+                        angle_bracket_close: 'x>y',
+                        at_the_rate: 'x@y',
+                        semicolon: 'x;y',
+                        colon: 'x:y',
+                        back_slash: 'x\\y',
+                        single_quote: "x'y",
+                        double_quotes: 'x"y',
+                        forward_slash: 'x/y',
+                        big_bracket_open: 'x[y',
+                        big_bracket_close: 'x]y',
+                        question_mark: 'x?y',
+                        comma: 'x,y',
+                        equals: 'x=y',
+                        negative_in_mid: 'x-y',
+                        negative_in_start: '-x'
+                    }
+                }),
+                'test; ' + correctString
+            );
+        });
+    });
+
+    describe('#foldLines', () => {
+        it('should Fold long header line', () => {
+            const inputStr = 'Subject: Testin command line kirja õkva kakva mõni tõnis kõllas põllas tõllas rõllas jušla kušla tušla musla',
+                outputStr =
+                    'Subject: Testin command line kirja\r\n' +
+                    ' =?UTF-8?Q?=C3=B5kva_kakva_m=C3=B5ni_t=C3=B5nis_k?=\r\n' +
+                    ' =?UTF-8?Q?=C3=B5llas_p=C3=B5llas_t=C3=B5llas_r?=\r\n' +
+                    ' =?UTF-8?Q?=C3=B5llas_ju=C5=A1la_ku=C5=A1la_tu?= =?UTF-8?Q?=C5=A1la?= musla',
+                encodedHeaderLine = mimeFuncs.encodeWords(inputStr, 'Q', 52);
+
+            assert.strictEqual(outputStr, mimeFuncs.foldLines(encodedHeaderLine, 76));
+        });
+
+        it('should Fold flowed text', () => {
+            const inputStr =
+                    'Testin command line kirja õkva kakva mõni tõnis kõllas põllas tõllas rõllas jušla kušla tušla musla Testin command line kirja õkva kakva mõni tõnis kõllas põllas tõllas rõllas jušla kušla tušla musla',
+                outputStr =
+                    'Testin command line kirja õkva kakva mõni tõnis kõllas põllas tõllas rõllas \r\n' +
+                    'jušla kušla tušla musla Testin command line kirja õkva kakva mõni tõnis \r\n' +
+                    'kõllas põllas tõllas rõllas jušla kušla tušla musla';
+
+            assert.strictEqual(outputStr, mimeFuncs.foldLines(inputStr, 76, true));
+        });
+
+        it('should fold one long line', () => {
+            const inputStr =
+                    'Subject: =?UTF-8?Q?=CB=86=C2=B8=C3=81=C3=8C=C3=93=C4=B1=C3=8F=CB=87=C3=81=C3=9B^=C2=B8\\=C3=81=C4=B1=CB=86=C3=8C=C3=81=C3=9B=C3=98^\\=CB=9C=C3=9B=CB=9D=E2=84=A2=CB=87=C4=B1=C3=93=C2=B8^\\=CB=9C=EF=AC=81^\\=C2=B7\\=CB=9C=C3=98^=C2=A3=CB=9C#=EF=AC=81^\\=C2=A3=EF=AC=81^\\=C2=A3=EF=AC=81^\\?=',
+                outputStr =
+                    'Subject:\r\n =?UTF-8?Q?=CB=86=C2=B8=C3=81=C3=8C=C3=93=C4=B1=C3=8F=CB=87=C3=81=C3=9B^=C2=B8\\=C3=81=C4=B1=CB=86=C3=8C=C3=81=C3=9B=C3=98^\\=CB=9C=C3=9B=CB=9D=E2=84=A2=CB=87=C4=B1=C3=93=C2=B8^\\=CB=9C=EF=AC=81^\\=C2=B7\\=CB=9C=C3=98^=C2=A3=CB=9C#=EF=AC=81^\\=C2=A3=EF=AC=81^\\=C2=A3=EF=AC=81^\\?=';
+
+            assert.strictEqual(outputStr, mimeFuncs.foldLines(inputStr, 76));
+        });
+
+        it('should extend a line to the end of a word longer than the line length', () => {
+            // there is no whitespace to fold on inside the first 76 chars, so the line
+            // runs on to the end of the word and the fold lands after it
+            const word = 'a'.repeat(80);
+
+            assert.strictEqual(mimeFuncs.foldLines(word + ' b', 76), word + '\r\n b');
+            assert.strictEqual(mimeFuncs.foldLines('Subject: ' + 'a'.repeat(100) + ' tail', 76), 'Subject:\r\n ' + 'a'.repeat(100) + '\r\n tail');
+        });
+
+        it('should keep the space on the folded line for flowed text', () => {
+            const word = 'a'.repeat(80);
+
+            assert.strictEqual(mimeFuncs.foldLines(word + ' b c', 76, true), word + ' \r\nb c');
+        });
+
+        it('should not fold a line that fits exactly', () => {
+            assert.strictEqual(mimeFuncs.foldLines('a'.repeat(76), 76), 'a'.repeat(76));
+        });
+    });
+
+    describe('#encodeURICharComponent', () => {
+        it('should percent encode a single byte character', () => {
+            assert.strictEqual(mimeFuncs.encodeURICharComponent(' '), '%20');
+            assert.strictEqual(mimeFuncs.encodeURICharComponent('\x01'), '%01');
+            assert.strictEqual(mimeFuncs.encodeURICharComponent('ä'), '%E4');
+        });
+    });
+
+    describe('#safeEncodeURIComponent', () => {
+        it('should also encode the characters encodeURIComponent leaves alone', () => {
+            assert.strictEqual(mimeFuncs.safeEncodeURIComponent("a*'()b"), 'a%2A%27%28%29b');
+            assert.strictEqual(mimeFuncs.safeEncodeURIComponent('x y'), 'x%20y');
+        });
+    });
+});
